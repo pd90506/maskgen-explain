@@ -3,7 +3,7 @@ mask_gen_model/
 reference code/
 trained/
 results/
-
+attvis/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
