@@ -254,7 +254,7 @@ class MaskGeneratingModel(nn.Module):
 
         # mask_loss
         # mask_loss = torch.abs(1 - mask_prob.mean([-1, -2]) - mask_sample_probs.mean([-1, -2])).mean() 
-        mask_loss = ((0.2 - mask_prob.mean([1, 2]))**2).mean()  
+        mask_loss = ((0.2 - mask_prob.mean([1, 2]) - mask_sample_probs.mean([-1, -2]))**2).mean()  
         # mask_loss = mask_prob.mean([1, 2]).mean() # [N] 
 
         loss =  reward_loss  + 1* mask_loss
