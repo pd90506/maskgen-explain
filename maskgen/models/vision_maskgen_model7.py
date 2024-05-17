@@ -233,17 +233,17 @@ class MaskGeneratingModel(nn.Module):
         # reward loss, if mask_sample_probs is higher, we want to optimize the probability of generating the masks
 
         # reward = (torch.clamp(mask_sample_probs/(true_prob.unsqueeze(1) + 1e-5), 0.7, 1.3) -0.7) / 0.6
-        reward = mask_sample_probs.mean(1,keepdim=True) # [N, 1, 1]
+        reward = mask_sample_probs # [N, n_steps, 1]
         # reward = 0.3 - torch.abs( mask_sample_probs - true_prob.unsqueeze(1)) # [N, n_steps, 1]
         # prob_loss = torch.exp(-bce_loss(mask_prob , mask_samples).mean(-1, keepdim=True)) #* mask_samples # [N, n_steps, L]
         # prob_loss = bce_loss(mask_prob , mask_samples) #* mask_samples # [N, n_steps, L]
-        old_logprob = -bce_loss(old_mask_prob, mask_samples).sum([-2, -1], keepdims=True) # [N, 1, 1]
-        new_logprob = -bce_loss(mask_prob, mask_samples).sum([-2, -1], keepdims=True) # [N, 1, 1]
+        old_logprob = -bce_loss(old_mask_prob, mask_samples).sum([-1], keepdims=True) # [N, n_steps, 1]
+        new_logprob = -bce_loss(mask_prob, mask_samples).sum([-1], keepdims=True) # [N, n_steps, 1]
         # prob_loss = (mask_prob / old_mask_prob).log() * mask_samples + ((1 - mask_prob) / (1 - old_mask_prob)).log() * (1 - mask_samples) # [N, n_steps, L]
-        ratio = (new_logprob - old_logprob).exp() # [N, 1, 1]
+        ratio = (new_logprob - old_logprob).exp() # [N, n_steps, 1]
         # print(ratio[:,0,0].view(-1))
-        surr1 = ratio * reward # [N, 1, 1]
-        surr2 = torch.clamp(ratio, 0.8, 1.2) * reward # [N, 1, 1]
+        surr1 = ratio * reward # [N, n_steps, 1]
+        surr2 = torch.clamp(ratio, 0.7, 1.3) * reward # [N, n_steps, 1]
         reward_loss = -torch.min(surr1, surr2).mean() # [N, ]
         # print('surr1', surr1.mean())
         # print('surr2', surr2.mean())
