@@ -211,7 +211,7 @@ class MaskGeneratingModel(nn.Module):
         # mask_loss = ((0.5 - mask_prob.mean([1, 2]))**2).mean()  
         # mask_loss = mask_prob.mean([1, 2]).mean() # [N] 
 
-        loss =  reward_loss  + 0.01* mask_loss
+        loss =  reward_loss  + 0.05* mask_loss
         mask_mean = mask_prob.mean([1, 2]) # [N]
         prob_mean = mask_sample_probs.mean([1, 2]) # [N]
 
@@ -239,7 +239,7 @@ class MaskGeneratingModel(nn.Module):
             # upper = mask_prob + mask_prob*0.2
             # lower = mask_prob - mask_prob*0.2
             # mask_prob = torch.clamp(mask_prob, lower, upper) # prevent the mask_prob from being too close to 0 or 1
-            # mask_prob = torch.clamp(mask_prob, 0.2, 0.8)
+            mask_prob = torch.clamp(mask_prob, 0.5, 0.5)
 
             # sample a mask (action) based on the mask probability (policy)
             mask = torch.bernoulli(mask_prob) # [N, L]

@@ -134,10 +134,99 @@ class MaskGeneratingModel(nn.Module):
         return predicted_class_selector
 
 
+    def generate_mask(self, sim, prob=False):
+        """Generate a mask based on the similarity tensor. [generate action based on policy]
+
+        Args:
+            sim (Tensor): The similarity tensor of shape [N, L].
+
+        Returns:
+            Tensor: The generated mask tensor of shape [N, L].
+        """
+        with torch.no_grad():
+            if prob:
+                mask_prob = sim
+            else:
+                mask_prob = torch.sigmoid(sim)
+            # scaler = torch.rand(sim.shape[0], 1, device=sim.device) 
+
+            # mask_prob = (mask_prob - 0) / (1e-5 + mask_prob.max(dim=-1, keepdim=True)[0])
+            # mask_prob = mask_prob * scaler
+            # mask_prob = torch.clamp(mask_prob, 0.2, 1.0) # prevent the mask_prob from being too close to 0 or 1
+
+            # sample a mask (action) based on the mask probability (policy)
+            mask = torch.bernoulli(mask_prob) # [N, L]
+        
+        return mask # [N, L]
+    
+    def get_mask_probs(self, x: torch.Tensor, mask: torch.Tensor, predicted_class_selector: torch.Tensor):
+        # No gradients upon the parameters of the prediction model
+        with torch.no_grad():
+            H, W = x.shape[-2:]
+            mask_size = int(math.sqrt(mask.shape[-1]))
+            reshaped_mask = mask.reshape(-1, mask_size, mask_size).unsqueeze(1) # [N, 1, size, size]
+            upsampled_mask = F.interpolate(reshaped_mask, size=(H, W), mode='nearest') # [N, 1, H, W]
+            masked_input = x * upsampled_mask # [N, C, H, W]
+            masked_probs = torch.softmax(self.pred_model(masked_input).logits, dim=-1) # [N, n_classes]
+            masked_probs = (masked_probs * predicted_class_selector).sum(-1, keepdim=True) # [N, 1]
+
+        return masked_probs
+
+    def sample_one_step(self, x: torch.Tensor, sim: torch.Tensor, predicted_class_selector: torch.Tensor):
+        with torch.no_grad():
+            mask = self.generate_mask(sim)
+            mask_probs = self.get_mask_probs(x, mask, predicted_class_selector)
+            # reverse_mask = 1.0 - mask
+            # reverse_mask_probs = self.get_mask_probs(x, reverse_mask, predicted_class_selector)
+        return mask, mask_probs #, reverse_mask, reverse_mask_probs
+
+    
+    def train_one_batch_inner(self, x: torch.Tensor, sim: torch.Tensor, predicted_class_selector: torch.Tensor, optimizer: torch.optim.Optimizer):
+        optimizer.zero_grad()
+
+        mask, masked_probs = self.sample_one_step(x, sim, predicted_class_selector)
+        # reverse_mask, reverse_masked_probs = self.sample_one_step(x, -sim, predicted_class_selector)
+        
+        # loss_dict = self.loss_func(sim, mask_list, reverse_mask_list, masked_probs_list, reverse_masked_probs_list)
+        loss_dict = self.loss_func_inner(sim, mask, masked_probs)
+
+        loss = loss_dict['loss']
+        loss.backward()
+        optimizer.step()
+
+        params_after = [param.clone() for param in self.parameters() if param.requires_grad]
+
+        return params_after
+
+    def train_one_batch_outer(self, x: torch.Tensor, sim_before: torch.Tensor, sim_after, predicted_class_selector: torch.Tensor, optimizer: torch.optim.Optimizer):
+        optimizer.zero_grad()
+
+        log_prob_before = torch.log(torch.sigmoid(sim_before)).mean(-1, keepdim=True) # [N, 1]
+        log_prob_after = torch.log(torch.sigmoid(sim_after)).mean(-1, keepdim=True) # [N, 1]
+
+        log_prob_diff = log_prob_after - log_prob_before # [N, 1]
+
+        cliped_ratio = torch.clamp(log_prob_diff.exp(), 0.7, 1.3) # [N, 1]
+        
+
+        mask, masked_probs = self.sample_one_step(x, sim, predicted_class_selector)
+        # reverse_mask, reverse_masked_probs = self.sample_one_step(x, -sim, predicted_class_selector)
+        
+        # loss_dict = self.loss_func(sim, mask_list, reverse_mask_list, masked_probs_list, reverse_masked_probs_list)
+        loss_dict = self.loss_func_inner(sim, mask, masked_probs)
+
+        loss = loss_dict['loss']
+        loss.backward()
+        optimizer.step()
+
+        params_after = [param.clone() for param in self.parameters() if param.requires_grad]
+
+        return params_after
+
     def train_one_batch(self, x: torch.Tensor, optimizer: torch.optim.Optimizer, n_steps=10):
         self.train()
         optimizer.zero_grad()
-        # params_before = [param.clone() for param in self.parameters() if param.requires_grad]
+        params_before = [param.clone() for param in self.parameters() if param.requires_grad]
         predicted_class_selector, true_prob = self.get_predicted_class_selector(x, output_probs=True)
         outputs = self.forward(x, predicted_class_selector)
         sim = outputs['sim']
@@ -198,20 +287,16 @@ class MaskGeneratingModel(nn.Module):
         # the prediction probability of the reverse masked input
 
         # reward loss, if mask_sample_probs is higher, we want to optimize the probability of generating the masks
-
-        # reward = (torch.clamp(mask_sample_probs/(true_prob.unsqueeze(1) + 1e-5), 0.7, 1.3) -0.7) / 0.6
-        reward = mask_sample_probs
+        reward = torch.log(mask_sample_probs) # [N, n_steps, 1]
         # reward = 0.3 - torch.abs( mask_sample_probs - true_prob.unsqueeze(1)) # [N, n_steps, 1]
-        # prob_loss = torch.exp(-bce_loss(mask_prob , mask_samples).mean(-1, keepdim=True)) #* mask_samples # [N, n_steps, L]
         prob_loss = bce_loss(mask_prob , mask_samples) #* mask_samples # [N, n_steps, L]
         reward_loss = (prob_loss * reward).mean() # [N, n_steps, L]
 
         # mask_loss
-        mask_loss = torch.abs(0.5 - mask_prob.mean([-1, -2]) - mask_sample_probs.mean([-1, -2])).mean() 
-        # mask_loss = ((0.5 - mask_prob.mean([1, 2]))**2).mean()  
-        # mask_loss = mask_prob.mean([1, 2]).mean() # [N] 
+        # mask_loss = ((0.05 - mask_prob.mean([-1, -2]) * mask_sample_probs.mean([-1, -2])) ** 2).mean() 
+        mask_loss = (mask_prob.mean([1, 2])).mean()   
 
-        loss =  reward_loss  + 0.01* mask_loss
+        loss =  reward_loss + 0.05 * mask_loss
         mask_mean = mask_prob.mean([1, 2]) # [N]
         prob_mean = mask_sample_probs.mean([1, 2]) # [N]
 
@@ -221,51 +306,7 @@ class MaskGeneratingModel(nn.Module):
                 'prob_mean': prob_mean.mean(),
                 'mask_loss': mask_loss}
 
-    def generate_mask(self, sim):
-        """Generate a mask based on the similarity tensor. [generate action based on policy]
 
-        Args:
-            sim (Tensor): The similarity tensor of shape [N, L].
-
-        Returns:
-            Tensor: The generated mask tensor of shape [N, L].
-        """
-        with torch.no_grad():
-            mask_prob = torch.sigmoid(sim)
-            # scaler = torch.rand(sim.shape[0], 1, device=sim.device) 
-
-            # mask_prob = (mask_prob - 0) / (1e-5 + mask_prob.max(dim=-1, keepdim=True)[0])
-            # mask_prob = mask_prob * scaler
-            # upper = mask_prob + mask_prob*0.2
-            # lower = mask_prob - mask_prob*0.2
-            # mask_prob = torch.clamp(mask_prob, lower, upper) # prevent the mask_prob from being too close to 0 or 1
-            # mask_prob = torch.clamp(mask_prob, 0.2, 0.8)
-
-            # sample a mask (action) based on the mask probability (policy)
-            mask = torch.bernoulli(mask_prob) # [N, L]
-        
-        return mask # [N, L]
-    
-    def get_mask_probs(self, x: torch.Tensor, mask: torch.Tensor, predicted_class_selector: torch.Tensor):
-        # No gradients upon the parameters of the prediction model
-        with torch.no_grad():
-            H, W = x.shape[-2:]
-            mask_size = int(math.sqrt(mask.shape[-1]))
-            reshaped_mask = mask.reshape(-1, mask_size, mask_size).unsqueeze(1) # [N, 1, size, size]
-            upsampled_mask = F.interpolate(reshaped_mask, size=(H, W), mode='nearest') # [N, 1, H, W]
-            masked_input = x * upsampled_mask # [N, C, H, W]
-            masked_probs = torch.softmax(self.pred_model(masked_input).logits, dim=-1) # [N, n_classes]
-            masked_probs = (masked_probs * predicted_class_selector).sum(-1, keepdim=True) # [N, 1]
-
-        return masked_probs
-
-    def sample_one_step(self, x: torch.Tensor, sim: torch.Tensor, predicted_class_selector: torch.Tensor):
-        with torch.no_grad():
-            mask = self.generate_mask(sim)
-            mask_probs = self.get_mask_probs(x, mask, predicted_class_selector)
-            # reverse_mask = 1.0 - mask
-            # reverse_mask_probs = self.get_mask_probs(x, reverse_mask, predicted_class_selector)
-        return mask, mask_probs #, reverse_mask, reverse_mask_probs
 
     def attribute_img(self, 
                       x, 
