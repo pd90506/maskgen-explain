@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 from maskgen.models import MLP
 import math
-from transformers import DistilBertModel
+from transformers import DistilBertModel, BertModel
 from typing import List
 
 
@@ -44,11 +44,12 @@ class MaskGeneratingModel(nn.Module):
     def __init__(self, pred_model: nn.Module, hidden_size, num_classes):
         super().__init__()
 
-        self.explain_model = DistilBertModel.from_pretrained("distilbert-base-uncased-finetuned-sst-2-english")
+        # self.explain_model = DistilBertModel.from_pretrained("distilbert-base-uncased-finetuned-sst-2-english")
+        self.explain_model = BertModel.from_pretrained("textattack/bert-base-uncased-SST-2")
         self.pred_model = pred_model
         self.num_classes = num_classes
 
-        explain_hidden_size = self.explain_model.config.dim
+        explain_hidden_size = self.explain_model.config.hidden_size
         self.hidden_size = hidden_size
         self.similarity_measure = SimilarityMeasure(hidden_size, explain_hidden_size)
 
@@ -99,12 +100,12 @@ class MaskGeneratingModel(nn.Module):
             Original feature of shape [N, d].
         """
         # get the output of the prediction model
-        output = self.pred_model.distilbert(input_ids, attention_mask)
+        output = self.pred_model.bert(input_ids, attention_mask)
         # get the first hidden state, which corresponds to the cls token
-        hidden_state = output[0] # [N, d]
-        pooled_output = hidden_state[:, 0, :] # [N, d]
-        pooled_output = self.pred_model.pre_classifier(pooled_output)  # (bs, dim)
-        pooled_output = nn.ReLU()(pooled_output)  # (bs, dim)
+        pooled_output = output[1] # [N, d]
+        # pooled_output = hidden_state[:, 0, :] # [N, d]
+        # pooled_output = self.pred_model.pre_classifier(pooled_output)  # (bs, dim)
+        # pooled_output = nn.ReLU()(pooled_output)  # (bs, dim)
 
         W = self.pred_model.classifier.weight # [n_classes, d]
         original_feature = pooled_output.unsqueeze(1) * W.unsqueeze(0)   # [N, n_classes, d]
