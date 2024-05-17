@@ -138,7 +138,7 @@ class MaskGeneratingModel(nn.Module):
             return predicted_class_selector
 
 
-    def loss_func(self, new_sim, old_sim, true_prob, mask_list, masked_input_probs_list):
+    def loss_func(self, new_sim, old_sim, attention_mask, mask_list, masked_input_probs_list):
         """Calculate the loss for the given mask.
 
         Args:
@@ -177,7 +177,7 @@ class MaskGeneratingModel(nn.Module):
         ratio = (new_logprob - old_logprob).exp() # [N, 1, 1]
         # print(ratio[:,0,0].view(-1))
         surr1 = ratio * reward # [N, 1, 1]
-        surr2 = torch.clamp(ratio, 0.8, 1.2) * reward # [N, 1, 1]
+        surr2 = torch.clamp(ratio, 0.7, 1.3) * reward # [N, 1, 1]
         reward_loss = -torch.min(surr1, surr2).mean() # [N, ]
         # print('surr1', surr1.mean())
         # print('surr2', surr2.mean())
@@ -189,9 +189,10 @@ class MaskGeneratingModel(nn.Module):
         # mask_loss
         # mask_loss = torch.abs(1 - mask_prob.mean([-1, -2]) - mask_sample_probs.mean([-1, -2])).mean() 
         # mask_loss = ((0.5 - mask_prob.mean([1, 2]))**2).mean()  
-        mask_loss = mask_prob.mean([1, 2]).mean() # [N] 
+        mask_loss = (mask_prob.mean([1]) * attention_mask).sum(-1) / attention_mask.sum(-1)  # [N, ] 
+        mask_loss = mask_loss.mean()
 
-        loss =  reward_loss  + 0.5* mask_loss
+        loss =  reward_loss  + 1* mask_loss
         mask_mean = mask_prob.mean([1, 2]) # [N]
         prob_mean = mask_sample_probs.mean([1, 2]) # [N]
 
@@ -268,7 +269,7 @@ class MaskGeneratingModel(nn.Module):
                 masked_probs_list.append(masked_probs)
             # get the sim tensor of the new model
             new_sim = self.forward(input_ids, attention_mask, predicted_class_selector)['sim']
-            loss_dict = self.loss_func(new_sim, old_sim, None, mask_list, masked_probs_list)
+            loss_dict = self.loss_func(new_sim, old_sim, attention_mask, mask_list, masked_probs_list)
 
             loss = loss_dict['loss']
             loss.backward()
@@ -308,9 +309,12 @@ class MaskGeneratingModel(nn.Module):
 
 
     
-    def attribute_text(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
+    def attribute_text(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, label=None):
         with torch.no_grad():
-            predicted_class_selector = self.get_predicted_class_selector(input_ids, attention_mask)
+            if label is None:
+                predicted_class_selector = self.get_predicted_class_selector(input_ids, attention_mask)
+            else:
+                predicted_class_selector = idx_to_selector(label, self.num_classes)
             outputs = self.forward(input_ids, attention_mask, predicted_class_selector)
             probs = torch.sigmoid(outputs['sim'])
         return probs
