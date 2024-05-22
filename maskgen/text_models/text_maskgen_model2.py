@@ -170,7 +170,7 @@ class MaskGeneratingModel(nn.Module):
         # reward loss, if mask_sample_probs is higher, we want to optimize the probability of generating the masks
 
         # reward = (torch.clamp(mask_sample_probs/(true_prob.unsqueeze(1) + 1e-5), 0.7, 1.3) -0.7) / 0.6
-        reward = mask_sample_probs # [N, 1, 1]
+        reward = torch.relu(mask_sample_probs - 0.5) # [N, 1, 1]
         # reward = 0.3 - torch.abs( mask_sample_probs - true_prob.unsqueeze(1)) # [N, n_steps, 1]
         # prob_loss = torch.exp(-bce_loss(mask_prob , mask_samples).mean(-1, keepdim=True)) #* mask_samples # [N, n_steps, L]
         # prob_loss = bce_loss(mask_prob , mask_samples) #* mask_samples # [N, n_steps, L]
@@ -193,10 +193,10 @@ class MaskGeneratingModel(nn.Module):
         # mask_loss = torch.abs(1 - mask_prob.mean([-1, -2]) - mask_sample_probs.mean([-1, -2])).mean() 
         # mask_loss = ((0.5 - mask_prob.mean([1, 2]))**2).mean()  
         mask_loss = (mask_prob.mean([1]) * attention_mask).sum(-1) / attention_mask.sum(-1)  # [N, ] 
-        mask_loss = ((0.6 - mask_loss - mask_sample_probs.mean([-1, -2]))**2)
+        mask_loss = ((0.8 - mask_loss - mask_sample_probs.mean([-1, -2]))**2)
         mask_loss = mask_loss.mean()
 
-        loss =  reward_loss  + 2* mask_loss
+        loss =  reward_loss  + 1* mask_loss
         mask_mean = mask_prob.mean([1, 2]) # [N]
         prob_mean = mask_sample_probs.mean([1, 2]) # [N]
 

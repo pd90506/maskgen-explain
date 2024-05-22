@@ -79,9 +79,39 @@ class RandomMaskSaliency():
         
         return weighted_mask.squeeze(1)
     
-    def attribute_text(self, x, baseline=None, n_samples=1000,):
-        # TODO
-        raise NotImplementedError("This function hasn't been developed.")
+    def attribute_text(self, input_ids, attention_mask, n_samples=100, mask_prob=0.5, seed=None):
+        device = input_ids.device
+        with torch.no_grad():
+            # Get the original prediction idx and the selector
+            predicted_class_idx = self.model(input_ids, attention_mask).logits.argmax(-1) # [1,]
+            selector = idx_to_selector(predicted_class_idx, self.num_classes) # [1, n_classes]
+
+            # Generate a random mask and reshape to the proper size.
+            mask = generate_mask(mask_size=input_ids.shape[1], mask_probability=mask_prob, batch_size=n_samples, seed=seed)
+            mask = mask.to(device)
+
+            # A number of `n_samples` randomly masked inputs
+            input_ids_masked = (input_ids * mask + 103 * (1 - mask)).long() # [N, seq_len]
+            attention_mask = attention_mask.expand(n_samples, -1) # [N, seq_len]
+            # print("input_ids_masked", input_ids_masked.shape)
+            # print("attention_mask", attention_mask.shape)
+
+            # Obtain the output probabilities of the masked inputs for the true predicted class.
+            logits = self.model(input_ids_masked, attention_mask).logits # [N, n_classes]
+            probs = torch.softmax(logits, dim=-1) # [N, n_classes]
+
+            # Only consider the masks with correct predictions. Weighted usign probs
+            correct_idx = (logits.argmax(-1) == predicted_class_idx).float().unsqueeze(-1) # [N, 1]
+            print("correct_idx", correct_idx.shape)
+            probs = ((probs * selector) * correct_idx).sum(-1, keepdim=True) # [N, 1]
+            # probs = probs.unsqueeze(-1).unsqueeze(-1) # [N, 1, 1, 1]
+            print("probs", probs.shape)
+
+            # Weighted mask
+            weighted_mask = (probs * (mask)).sum(0, keepdim=True) / probs.sum() # [1, 1, size, size]
+            print("weighted_mask", weighted_mask.shape)
+        
+        return weighted_mask.squeeze(1)
 
 
 class BatchRandomMaskSaliency():

@@ -4,7 +4,11 @@ text_mask_gen_model/
 reference code/
 trained/
 results/
+attvis/results/
 attvis/
+pytorch-grad-cam/
+data/
+bert_models/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
