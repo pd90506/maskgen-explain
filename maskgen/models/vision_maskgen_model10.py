@@ -16,9 +16,10 @@ class SimilarityMeasure(nn.Module):
 
     def __init__(self, pred_hidden_size, explain_hidden_size, embed_size=512):
         super(SimilarityMeasure, self).__init__()
-        # self.pred_map = nn.Linear(pred_hidden_size, embed_size)
+        self.pred_map = nn.Linear(pred_hidden_size, embed_size)
         # self.explain_map = nn.Linear(explain_hidden_size, embed_size)
-        self.pred_map = MLP(pred_hidden_size, 128, embed_size, num_blocks=2, bottleneck_dim=64)
+        # self.pred_map = MLP(pred_hidden_size, 128, embed_size, num_blocks=2, bottleneck_dim=64)
+        # embed_size = pred_hidden_size
         self.explain_map = MLP(explain_hidden_size, 128, embed_size, num_blocks=2, bottleneck_dim=64)
         self.logit_scale = nn.Parameter(torch.tensor(1.0))
     
@@ -34,6 +35,7 @@ class SimilarityMeasure(nn.Module):
             torch.Tensor: Similarity tensor of shape [N, L].
         """
         pred_feature = F.normalize(self.pred_map(pred_feature), p=2, dim=-1).unsqueeze(1)  # [N, 1, embed_size]
+        # pred_feature = pred_feature.unsqueeze(1)  # [N, 1, embed_size]
         explain_features = F.normalize(self.explain_map(explain_features), p=2, dim=-1)  # [N, L, embed_size]
 
         logit_scale = self.logit_scale.exp()
@@ -235,7 +237,7 @@ class MaskGeneratingModel(nn.Module):
         # reward loss, if mask_sample_probs is higher, we want to optimize the probability of generating the masks
 
         # reward = (torch.clamp(mask_sample_probs/(true_prob.unsqueeze(1) + 1e-5), 0.7, 1.3) -0.7) / 0.6
-        reward = mask_sample_probs # [N, n_steps, 1]
+        reward = torch.relu(mask_sample_probs - 0.001) # [N, n_steps, 1]
         # reward = 0.3 - torch.abs( mask_sample_probs - true_prob.unsqueeze(1)) # [N, n_steps, 1]
         # prob_loss = torch.exp(-bce_loss(mask_prob , mask_samples).mean(-1, keepdim=True)) #* mask_samples # [N, n_steps, L]
         # prob_loss = bce_loss(mask_prob , mask_samples) #* mask_samples # [N, n_steps, L]
