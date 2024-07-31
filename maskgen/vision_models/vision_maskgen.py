@@ -148,7 +148,7 @@ class MaskGeneratingModel(nn.Module):
 
         # mask loss
         # TODO: here we use softmax to enforce the ranking nature of the explanation.
-        mask_loss = (mask * torch.softmax(sim)).mean(-1) # [N,]
+        mask_loss = (mask * torch.softmax(sim, -1)).sum(-1) # [N,]
         mask_loss = mask_loss.mean()
 
         # total loss
