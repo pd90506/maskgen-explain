@@ -1,4 +1,6 @@
 # custom
+log/
+env_config.json
 attvis/
 mask_gen_model/
 text_mask_gen_model/
