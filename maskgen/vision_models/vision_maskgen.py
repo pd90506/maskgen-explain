@@ -117,6 +117,7 @@ class MaskGeneratingModel(nn.Module):
         masked_pred_logits = self.get_pred_logits(model, pixel_values, mask)
         return mask, masked_pred_logits
     
+    @torch.no_grad()
     def calculate_reward(self, masked_pred_logits, pred_logits):
         """
         Calculate the reward for the given mask.
@@ -128,9 +129,9 @@ class MaskGeneratingModel(nn.Module):
         Returns:
             Tensor: The reward tensor of shape [N, ].
         """
-        reward = self.bce_loss(torch.sigmoid(masked_pred_logits), torch.sigmoid(pred_logits)) # [N, num_classes]
+        reward = self.bce_loss(torch.softmax(masked_pred_logits, -1), torch.softmax(pred_logits, -1)) # [N, num_classes]
         reward = 1 / (reward + 1e-5) # [N, num_classes]
-        reward = (reward * torch.sigmoid(pred_logits)).mean(-1) # [N,]
+        reward = (reward * torch.softmax(pred_logits, dim=-1)).mean(-1) # [N,]
         return reward
 
 
@@ -146,27 +147,60 @@ class MaskGeneratingModel(nn.Module):
         fit_loss = self.bce_loss(torch.sigmoid(sim), mask).mean(-1) # [N,]
         reward_loss = (reward * fit_loss).mean()
 
-        # mask loss
-        # TODO: here we use softmax to enforce the ranking nature of the explanation.
-        mask_loss = (mask * torch.softmax(sim, -1)).sum(-1) # [N,]
-        mask_loss = mask_loss.mean()
-
+        # mask loss, enforce the mask to be sparse
+        advantage = (torch.exp(masked_pred_logits - pred_logits) * torch.softmax(pred_logits, -1) ).sum(-1) #[N,]
+        advantage = advantage - 1
+        mask_loss = (torch.sigmoid(sim).mean(-1) * advantage).mean()
+        
         # total loss
-        loss = reward_loss + mask_loss
+        loss = reward_loss  + mask_loss
 
         # other outputs
         mask_mean = mask.mean()
         prob_mean = torch.sigmoid(sim).mean()
 
-
-
         return {'loss': loss,
                 'reward_loss': reward_loss,
                 'mask_loss': mask_loss,
+                'advantage': advantage.mean(),
+                'reward': reward.mean(),
                 'mask_mean': mask_mean,
                 'prob_mean': prob_mean,
                 }
+    
+    def loss_func_v2(self, model, pixel_values, num_samples=5):
+        sim = self.forward(model=model, pixel_values=pixel_values)
+        pred_logits = self.get_pred_logits(model=model, pixel_values=pixel_values)
+        total_reward_loss = 0
+        total_advantage = 0
+        for idx in range(num_samples):
+            # obtain the mask and masked_pred_logits from the sampled masked input
+            mask, masked_pred_logits = self.sample_one_step(model=model, pixel_values=pixel_values, sim=sim)
+            reward = self.calculate_reward(masked_pred_logits, pred_logits) # [N,]
+            fit_loss = self.bce_loss(torch.sigmoid(sim), mask).mean(-1) # [N,]
+            # reward loss for one sampling step
+            reward_loss = reward * fit_loss # [N,] 
+            total_reward_loss += reward_loss
+            # advantage for one sampling step
+            advantage = (torch.exp(masked_pred_logits - pred_logits) * torch.softmax(pred_logits, -1) ).sum(-1) #[N,]
+            advantage = advantage - 0.5
+            total_advantage += advantage
+        
+        reward_loss = (total_reward_loss / num_samples).mean()
+        advantage = total_advantage / num_samples
+        mask_loss = (torch.sigmoid(sim).mean(-1) * advantage).mean()
+        loss = reward_loss + mask_loss
 
+        # other outputs
+        prob_mean = torch.sigmoid(sim).mean()
+        return {'loss': loss,
+                'reward_loss': reward_loss,
+                'mask_loss': mask_loss,
+                'advantage': advantage.mean(),
+                'reward': reward.mean(),
+                'prob_mean': prob_mean,
+                }
+            
     
     def train_one_batch(self, x: torch.Tensor, optimizer: torch.optim.Optimizer, n_steps=10):
         self.train()
@@ -195,11 +229,6 @@ class MaskGeneratingModel(nn.Module):
         loss.backward()
         optimizer.step()
         return loss_dict
-
-    
-
-    
-
 
 
     def attribute_img(self, 
