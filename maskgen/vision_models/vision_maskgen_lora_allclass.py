@@ -11,85 +11,48 @@ from transformers.models.bert.modeling_bert import BertEncoder, BertPredictionHe
 from transformers import BertConfig 
 
 
-class Encoder(BertEncoder):
-    def __init__(self, hidden_size=768, intermediate_size=3072):
-        config = BertConfig()
-        config.num_hidden_layers = 6
-        config.hidden_size = hidden_size
-        config.intermediate_size = intermediate_size
-        config.num_attention_heads = 12
-        super().__init__(config)
-        self.transform = BertPredictionHeadTransform(config)
-    
-    def forward(self, hidden_states):
-        last_hidden_state = super().forward(hidden_states)['last_hidden_state']
-        output = self.transform(last_hidden_state)
-        return output
-
-
-class SimilarityMeasure(nn.Module):
-    def __init__(self, hidden_size, intermediate_size=3072):
-        super(SimilarityMeasure, self).__init__()
-        self.pred_map = Encoder(hidden_size=hidden_size, intermediate_size=intermediate_size)
-        self.fc = nn.Linear(hidden_size, 1)
-    
-    def forward(self, feature):
-        """
-        Forward pass of the model.
-
-        Args:
-            feature (torch.Tensor): Feature tensor of shape [N, L+1, hidden_size].
-
-        Returns:
-            torch.Tensor: Similarity logits of shape [N, L].
-        """
-        feature = self.pred_map(feature)
-
-        logits = self.fc(feature).squeeze(-1) # [N, L+1]
-
-        return logits[:, 1:]  # [N, L]
-
-
 class MaskGeneratingModel(nn.Module):
-    def __init__(self, hidden_size, num_classes):
+    def __init__(self, base_model:nn.Module, hidden_size, num_classes):
         super().__init__()
-        self.similarity_measure = SimilarityMeasure(hidden_size=hidden_size)
-
+        # self.similarity_measure = SimilarityMeasure(hidden_size=hidden_size)
         self.bce_loss = nn.BCELoss(reduction='none')
+        self.base_model = base_model
+        self.fc = nn.Linear(hidden_size, num_classes, bias=False)
+        # self.fc = nn.Linear(hidden_size, 1, bias=False)
+        self.num_classes = num_classes
 
     @torch.no_grad()
-    def get_features(self, model, x: torch.Tensor):
+    def get_features(self, x: torch.Tensor):
         """
         Extract the features from the given model.
         
         """
         # get the output of the ViT model in the classifier
-        output = model.vit(x)
+        output = self.base_model(x)
         # get the last hidden state
-        hidden_states = output['last_hidden_state'] # [N, L+1, d]
+        hidden_states = output['last_hidden_state'][:,1:,:] # [N, L, d]
         return hidden_states
 
 
-    def forward(self, model, pixel_values: torch.Tensor):
-        hidden_states = self.get_features(model, pixel_values)
-        
-        sim = self.similarity_measure(hidden_states) # [N, L]
-        return sim
+    def forward(self, pixel_values: torch.Tensor):
+        hidden_states = self.get_features(pixel_values)
+        sim_logits = self.fc(hidden_states).squeeze(-1) # [N, L]
+        return sim_logits
 
     @torch.no_grad()
-    def generate_mask(self, sim):
+    def generate_mask(self, sim_logits):
         """Generate a mask based on the similarity tensor. [generate action based on policy]
 
         Args:
-            sim (Tensor): The similarity tensor of shape [N, L].
+            sim (Tensor): The similarity tensor of shape [N, L, num_classes].
 
         Returns:
             Tensor: The generated mask tensor of shape [N, L].
         """
-        mask_prob = torch.sigmoid(sim)
-        mask = torch.bernoulli(mask_prob) # [N, L]
+        mask_prob = torch.sigmoid(sim_logits) # [N, L, num_classes]
+        mask = torch.bernoulli(mask_prob) # [N, L, num_classes]
         
-        return mask # [N, L]
+        return mask # [N, L, num_classes]
 
     @torch.no_grad()
     def get_pred_logits(self, model, pixel_values: torch.Tensor, mask=None):
@@ -103,7 +66,11 @@ class MaskGeneratingModel(nn.Module):
             masked_pred_logits: (N, num_classes) The prediction probabilities of the masked inputs.
         """
         if mask is not None:
+            # shape = mask.shape
+            # mask = mask.reshape(shape[0], shape[1]) # [N, L], 
             bool_masked_pos = 1.0 - mask # [N, L] 1 for masked, 0 for unmasked
+            # print("bool_masked_pos", bool_masked_pos.shape)
+
             pred_logits = model(pixel_values, bool_masked_pos=bool_masked_pos).logits # [N, num_classes]
         else:
             pred_logits = model(pixel_values).logits
@@ -113,7 +80,8 @@ class MaskGeneratingModel(nn.Module):
 
     @torch.no_grad()
     def sample_one_step(self, model, pixel_values: torch.Tensor, sim: torch.Tensor):
-        mask = self.generate_mask(sim)
+        mask = self.generate_mask(sim) # [N, L]
+
         masked_pred_logits = self.get_pred_logits(model, pixel_values, mask)
         return mask, masked_pred_logits
     
@@ -129,67 +97,47 @@ class MaskGeneratingModel(nn.Module):
         Returns:
             Tensor: The reward tensor of shape [N, ].
         """
-        reward = self.bce_loss(torch.softmax(masked_pred_logits, -1), torch.softmax(pred_logits, -1)) # [N, num_classes]
-        reward = 1 / (reward + 1e-5) # [N, num_classes]
-        reward = (reward * torch.softmax(pred_logits, dim=-1)).mean(-1) # [N,]
+        selector = idx_to_selector(pred_logits.argmax(-1), self.num_classes) # [N, num_classes]
+        pred_prob = torch.softmax(pred_logits, -1) # [N, num_classes]
+        masked_pred_prob = torch.softmax(masked_pred_logits, -1) # [N, num_classes]
+
+        pred_prob = (pred_prob * selector).sum(-1) # [N,]
+        masked_pred_prob = (masked_pred_prob * selector).sum(-1) # [N,] 
+        reward = torch.exp(torch.log(masked_pred_prob) - torch.log(pred_prob)) # [N,]
+        # reward = masked_pred_prob
+        # reward = self.bce_loss(torch.softmax(masked_pred_logits, -1), torch.softmax(pred_logits, -1)) # [N, num_classes]
+        # reward = 1 / (reward + 1e-5) # [N, num_classes]
+        # reward = (reward * torch.softmax(pred_logits, dim=-1)).mean(-1) # [N,]
+
         return reward
-
-
-    def loss_func(self, sim, mask, masked_pred_logits, pred_logits):
-        """Calculate the loss for the given mask.
-        Args:
-            sim: The similarity tensor of shape [N, L].
-            mask: The mask tensor of shape [N, L].
-            masked_pred_logits: The prediction logits of the masked input. [N, num_classes]
-            pred_logits: The prediction logits of the original input. [N, num_classes]
-        """
-        reward = self.calculate_reward(masked_pred_logits, pred_logits) # [N,]
-        fit_loss = self.bce_loss(torch.sigmoid(sim), mask).mean(-1) # [N,]
-        reward_loss = (reward * fit_loss).mean()
-
-        # mask loss, enforce the mask to be sparse
-        advantage = (torch.exp(masked_pred_logits - pred_logits) * torch.softmax(pred_logits, -1) ).sum(-1) #[N,]
-        advantage = advantage - 1
-        mask_loss = (torch.sigmoid(sim).mean(-1) * advantage).mean()
-        
-        # total loss
-        loss = reward_loss  + mask_loss
-
-        # other outputs
-        mask_mean = mask.mean()
-        prob_mean = torch.sigmoid(sim).mean()
-
-        return {'loss': loss,
-                'reward_loss': reward_loss,
-                'mask_loss': mask_loss,
-                'advantage': advantage.mean(),
-                'reward': reward.mean(),
-                'mask_mean': mask_mean,
-                'prob_mean': prob_mean,
-                }
     
     def loss_func_v2(self, model, pixel_values, num_samples=5):
-        sim = self.forward(model=model, pixel_values=pixel_values)
+        sim = self.forward(pixel_values=pixel_values) #[N, L, num_classes]
         pred_logits = self.get_pred_logits(model=model, pixel_values=pixel_values)
+        labels = pred_logits.argmax(-1) # [N,]
+        selector = idx_to_selector(labels, self.num_classes).unsqueeze(1)
+        sim = (sim * selector.float()).sum(-1) # [N, L]
         total_reward_loss = 0
         total_advantage = 0
         for idx in range(num_samples):
             # obtain the mask and masked_pred_logits from the sampled masked input
             mask, masked_pred_logits = self.sample_one_step(model=model, pixel_values=pixel_values, sim=sim)
             reward = self.calculate_reward(masked_pred_logits, pred_logits) # [N,]
+            advantage = reward - 0.4
+            
             fit_loss = self.bce_loss(torch.sigmoid(sim), mask).mean(-1) # [N,]
             # reward loss for one sampling step
             reward_loss = reward * fit_loss # [N,] 
             total_reward_loss += reward_loss
             # advantage for one sampling step
-            advantage = (torch.exp(masked_pred_logits - pred_logits) * torch.softmax(pred_logits, -1) ).sum(-1) #[N,]
-            advantage = advantage - 0.5
+            # advantage = (torch.exp(masked_pred_logits - pred_logits) * torch.softmax(pred_logits, -1) ).sum(-1) #[N,]
+            
             total_advantage += advantage
         
         reward_loss = (total_reward_loss / num_samples).mean()
         advantage = total_advantage / num_samples
         mask_loss = (torch.sigmoid(sim).mean(-1) * advantage).mean()
-        loss = reward_loss + mask_loss
+        loss = reward_loss + 1 * mask_loss
 
         # other outputs
         prob_mean = torch.sigmoid(sim).mean()
@@ -202,33 +150,33 @@ class MaskGeneratingModel(nn.Module):
                 }
             
     
-    def train_one_batch(self, x: torch.Tensor, optimizer: torch.optim.Optimizer, n_steps=10):
-        self.train()
-        optimizer.zero_grad()
-        predicted_class_selector = self.get_predicted_class_selector(x)
-        outputs = self.forward(x, predicted_class_selector)
-        sim = outputs['sim']
+    # def train_one_batch(self, x: torch.Tensor, optimizer: torch.optim.Optimizer, n_steps=10):
+    #     self.train()
+    #     optimizer.zero_grad()
+    #     predicted_class_selector = self.get_predicted_class_selector(x)
+    #     outputs = self.forward(x, predicted_class_selector)
+    #     sim = outputs['sim']
         
 
-        mask_list, reverse_mask_list = [], []
-        masked_probs_list, reverse_masked_probs_list = [], []
-        for idx in range(n_steps):
+    #     mask_list, reverse_mask_list = [], []
+    #     masked_probs_list, reverse_masked_probs_list = [], []
+    #     for idx in range(n_steps):
 
-            mask, masked_probs = self.sample_one_step(x, sim, predicted_class_selector)
-            reverse_mask, reverse_masked_probs = self.sample_one_step(x, -sim, predicted_class_selector)
+    #         mask, masked_probs = self.sample_one_step(x, sim, predicted_class_selector)
+    #         reverse_mask, reverse_masked_probs = self.sample_one_step(x, -sim, predicted_class_selector)
 
-            mask_list.append(mask)
-            reverse_mask_list.append(reverse_mask)
-            masked_probs_list.append(masked_probs)
-            reverse_masked_probs_list.append(reverse_masked_probs)
+    #         mask_list.append(mask)
+    #         reverse_mask_list.append(reverse_mask)
+    #         masked_probs_list.append(masked_probs)
+    #         reverse_masked_probs_list.append(reverse_masked_probs)
         
-        loss_dict = self.loss_func(sim, mask_list, reverse_mask_list, masked_probs_list, reverse_masked_probs_list)
-        # loss_dict = self.loss_func(sim, mask_list, masked_probs_list)
+    #     loss_dict = self.loss_func(sim, mask_list, reverse_mask_list, masked_probs_list, reverse_masked_probs_list)
+    #     # loss_dict = self.loss_func(sim, mask_list, masked_probs_list)
 
-        loss = loss_dict['loss']
-        loss.backward()
-        optimizer.step()
-        return loss_dict
+    #     loss = loss_dict['loss']
+    #     loss.backward()
+    #     optimizer.step()
+    #     return loss_dict
 
 
     def attribute_img(self, 
