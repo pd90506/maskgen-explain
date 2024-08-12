@@ -3,7 +3,6 @@ import torch.nn as nn
 from maskgen.utils import idx_to_selector
 import torch.nn.functional as F
 import numpy as np
-from maskgen.models import MLP
 import math
 from transformers import ViTModel, CLIPVisionModel
 from typing import List
@@ -27,7 +26,7 @@ class MaskGeneratingModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
         )
-
+        
         self.fc = nn.Linear(hidden_size, 1, bias=False)
         self.num_classes = num_classes
     
@@ -47,16 +46,19 @@ class MaskGeneratingModel(nn.Module):
         hidden_states = output['last_hidden_state'][:,1:,:]
         mu_logits = self.actor(hidden_states).squeeze(-1) # [N, L]
         dist = Bernoulli(logits=mu_logits)
-        mask_prob = torch.sigmoid(mu_logits)
 
-        # pooled_output = output['last_hidden_state'][:,0,:] # [N, d]
-        # value = self.critic(pooled_output) # [N, 1]
-        value_logits = self.critic(hidden_states).squeeze(-1) # [N, L]
-        prior_attribution = torch.softmax(value_logits, -1) # [N, L]
-
-        value = (mask_prob * prior_attribution).sum(-1, keepdim=True) # [N, 1]
+        pooled_output = output['last_hidden_state'][:,0,:] # [N, d]
+        value = self.critic(pooled_output) # [N, 1]
 
         return dist, value
+    
+    def get_attribution(self, pixel_values):
+        output = self.base_model(pixel_values)
+        hidden_states = output['last_hidden_state'][:,1:,:]
+        value_logits = self.critic(hidden_states).squeeze(-1) # [N, L]
+        attribution = torch.sigmoid(value_logits)
+        ttribution = F.normalize(attribution, p=1, dim=-1)
+        return attribution
 
 
     def ppo_iter(self, mini_batch_size, states, actions, log_probs, returns, advantage):
@@ -173,10 +175,6 @@ class MaskGeneratingModel(nn.Module):
         action : mask
         state : pixel_values
         """
-        # # obtain the generative distribution of the mask
-        # prior_attribution = torch.exp(dist.logits) # [N, L]
-        # # prior_attribution = F.normalize(prior_attribution, p=1, dim=-1) # [N, L]
-        # prior_attribution = prior_attribution / prior_attribution.sum(-1, keepdim=True) # [N, L]
 
         pred_logits = model(pixel_values).logits # [N, num_classes]
         pred = pred_logits.argmax(-1) # [N,]
@@ -191,10 +189,7 @@ class MaskGeneratingModel(nn.Module):
         masked_pred_prob = (masked_pred_prob * selector).sum(-1) # [N,]
 
         reward = torch.exp(torch.log(masked_pred_prob) - torch.log(pred_prob)) # [N,]
-
-        # mask_panelty = (prior_attribution * mask).sum(-1)
-
-        # reward = reward - mask_panelty # [N,]
+        reward = reward * (torch.ones_like(mask).sum(-1)) / (mask.sum(-1) + 1e-5) # [N,]
 
         state = pixel_values
         return state, reward
@@ -240,7 +235,6 @@ class MaskGeneratingModel(nn.Module):
             states    = torch.cat(states)
             actions   = torch.cat(actions)
             advantages = returns - values
-            # advantages = rewards
         
         # print("states", states.shape)
         # print("actions", actions.shape)
