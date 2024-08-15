@@ -1,4 +1,5 @@
 # custom
+lightning_logs/
 log/
 env_config.json
 attvis/
