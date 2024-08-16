@@ -17,6 +17,8 @@ class MaskGeneratingModel(nn.Module):
         self.bce_loss = nn.BCELoss(reduction='none')
         self.base_model = base_model
 
+        self.label_embedding = nn.Embedding(num_classes, hidden_size)
+
         self.critic = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
@@ -31,32 +33,39 @@ class MaskGeneratingModel(nn.Module):
         self.num_classes = num_classes
 
         # Freeze the base_model
-        for param in self.base_model.parameters():
-            param.requires_grad = False
+        # for param in self.base_model.parameters():
+        #     param.requires_grad = False
+        # for param in self.label_embedding.parameters():
+        #     param.requires_grad = False
     
-    
-    def get_dist_critic(self, pixel_values):
+    def get_dist_critic(self, pixel_values, labels):
         """
         Calculates the distribution of the mask and the critic value given the pixel values.
         Args:
-            pixel_values (torch.Tensor) [N, H, W]: Tensor containing the pixel values.
+            pixel_values (torch.Tensor) [N, C, H, W]: Tensor containing the pixel values.
+            labels (torch.Tensor) [N, 1]: Tensor containing the labels.
         Returns:
             dist (torch.distributions.Bernoulli): Bernoulli distribution of mask.
             value (torch.Tensor): The critic value.
         """
+        labels = labels.view(-1)
+        label_emb = self.label_embedding(labels) # [N, d]
+        # print("label_emb", label_emb.shape)
         output = self.base_model(pixel_values)
 
         hidden_states = output['last_hidden_state'][:,1:,:]
+        hidden_states = hidden_states + label_emb.unsqueeze(1)
         mu_logits = self.actor(hidden_states).squeeze(-1) # [N, L]
         dist = Bernoulli(logits=mu_logits)
 
         pooled_output = output['last_hidden_state'][:,0,:] # [N, d]
+        pooled_output = pooled_output + label_emb
         value = self.critic(pooled_output) # [N, 1]
 
         return dist, value
 
 
-    def ppo_iter(self, mini_batch_size, states, actions, log_probs, returns, advantage):
+    def ppo_iter(self, mini_batch_size, states, actions, log_probs, returns, advantage, labels):
         """
         Generates mini-batches of data for Proximal Policy Optimization (PPO) algorithm.
         Parameters:
@@ -74,7 +83,7 @@ class MaskGeneratingModel(nn.Module):
         batch_size = states.size(0)
         for _ in range(batch_size // mini_batch_size):
             rand_ids = np.random.randint(0, batch_size, mini_batch_size)
-            yield states[rand_ids, :], actions[rand_ids, :], log_probs[rand_ids, :], returns[rand_ids, :], advantage[rand_ids, :]
+            yield states[rand_ids, :], actions[rand_ids, :], log_probs[rand_ids, :], returns[rand_ids, :], advantage[rand_ids, :], labels[rand_ids, :]
             
             
     def ppo_update(self, optimizer, ppo_epochs, mini_batch_size, states, actions, log_probs, returns, advantages, labels, clip_param=0.2):
@@ -93,9 +102,9 @@ class MaskGeneratingModel(nn.Module):
         """
 
         for _ in range(ppo_epochs):
-            for state, action, old_log_probs, return_, advantage in self.ppo_iter(mini_batch_size, states, actions, log_probs, returns, advantages):
+            for state, action, old_log_probs, return_, advantage, label in self.ppo_iter(mini_batch_size, states, actions, log_probs, returns, advantages, labels):
 
-                dist, value = self.get_dist_critic(state)
+                dist, value = self.get_dist_critic(state, labels=label)
                 entropy = dist.entropy().mean()
                 new_log_probs = dist.log_prob(action).sum(-1, keepdim=True)
 
@@ -107,7 +116,9 @@ class MaskGeneratingModel(nn.Module):
                 # learn the value function based on the estimated return
                 critic_loss = (return_ - value).pow(2).mean()
 
-                loss = 0.5 * critic_loss + actor_loss - 0.0001 * entropy
+                mask_loss = dist.logits.mean(-1).mean()
+
+                loss = 0.5 * critic_loss + actor_loss - 0.001 * entropy + 0.1 * mask_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -119,9 +130,11 @@ class MaskGeneratingModel(nn.Module):
                  "critic_loss": critic_loss.item(),
                  "returns": return_.mean().item(),
                  'entropy': entropy.item(),
-                 "value": value.mean().item()}
+                 "value": value.mean().item(),
+                 "mask": mask_loss.item()}
     
-    def compute_gae(self, next_value, rewards, masks, values, gamma=0.99, tau=0.95):
+    @torch.no_grad()
+    def compute_gae(self, next_value, rewards, masks, values, gamma=0.50, tau=0.95):
         """
         Computes the Generalized Advantage Estimation (GAE) for the given rewards, masks, values, and next value.
         Parameters:
@@ -141,7 +154,14 @@ class MaskGeneratingModel(nn.Module):
         mean_reward = sum(rewards) / len(rewards)
         for idx, step in enumerate(reversed(range(len(rewards)))):
             # delta = rewards[step] + gamma * values[step + 1] * masks[step] - values[step]
-            gae = rewards[step] - gamma * mean_reward - (1 - gamma) * values[step]
+            # gae = rewards[step] - gamma * mean_reward - (1 - gamma) * values[step]
+            
+            # discounted_value =  (1 - gamma) * step * values[step]
+            # discounted_value_diff = (1 - gamma) * values[step]
+            # delta = rewards[step] - discounted_value_diff
+            # gae  = delta + tau * gae
+            gae = rewards[step] - values[step]
+
  
             # gae = delta + gamma * tau * masks[step] * gae
             # sum_gae = delta + sum_gae
@@ -151,20 +171,6 @@ class MaskGeneratingModel(nn.Module):
             returns.insert(0, gae + values[step])
             # print(delta.mean())
         return returns
-
-
-    def get_mask_probs(self, x: torch.Tensor, mask: torch.Tensor, predicted_class_selector: torch.Tensor):
-        # No gradients upon the parameters of the prediction model
-        with torch.no_grad():
-            H, W = x.shape[-2:]
-            mask_size = int(math.sqrt(mask.shape[-1]))
-            reshaped_mask = mask.reshape(-1, mask_size, mask_size).unsqueeze(1) # [N, 1, size, size]
-            upsampled_mask = F.interpolate(reshaped_mask, size=(H, W), mode='nearest') # [N, 1, H, W]
-            masked_input = x * upsampled_mask # [N, C, H, W]
-            masked_probs = torch.softmax(self.pred_model(masked_input).logits, dim=-1) # [N, n_classes]
-            masked_probs = (masked_probs * predicted_class_selector).sum(-1, keepdim=True) # [N, 1]
-
-        return masked_probs
 
     
     @torch.no_grad()
@@ -193,7 +199,7 @@ class MaskGeneratingModel(nn.Module):
         masked_pred_prob = (masked_pred_prob * selector).sum(-1) # [N,]
 
         reward = torch.exp(torch.log(masked_pred_prob) - torch.log(pred_prob)) # [N,]
-        reward = reward * (torch.ones_like(mask).sum(-1)) / (mask.sum(-1) + 1e-5) # [N,]
+        reward = reward * (torch.ones_like(mask).sum(-1)) / (mask.sum(-1) + 1) # [N,]
         # print("reward", reward[0])
 
         state = pixel_values
@@ -209,10 +215,10 @@ class MaskGeneratingModel(nn.Module):
         rewards   = []
         masks     = []
         entropy = 0
-        labels = []
+        labels = [] 
 
-        # 确保 pixel_values 在正确的设备上
-        pixel_values = pixel_values.to(next(self.parameters()).device)
+        # # 确保 pixel_values 在正确的设备上
+        # pixel_values = pixel_values.to(next(self.parameters()).device)
         state = pixel_values
         with torch.no_grad():
             pred_logits = model(pixel_values).logits # [N, num_classes]
@@ -220,7 +226,7 @@ class MaskGeneratingModel(nn.Module):
     
         with torch.no_grad():
             for step in range(num_steps):
-                dist, value = self.get_dist_critic(pixel_values)
+                dist, value = self.get_dist_critic(pixel_values, labels=label)
                 action = dist.sample()
                 next_state, reward = self.get_action_reward(model, state, action)
 
@@ -242,7 +248,7 @@ class MaskGeneratingModel(nn.Module):
 
                 state = next_state 
             
-            _, next_value = self.get_dist_critic(state)
+            _, next_value = self.get_dist_critic(state, label)
             
             returns = self.compute_gae(next_value, rewards, masks, values)
             # returns = self.compute_gae_static_state(next_value, rewards, masks, values)
@@ -252,13 +258,12 @@ class MaskGeneratingModel(nn.Module):
             values    = torch.cat(values)
             states    = torch.cat(states)
             actions   = torch.cat(actions)
-            labels = torch.cat(labels)
+            labels    = torch.cat(labels)
             # returns = returns[0]
             # log_probs = log_probs[0]
             # values    = values[0]
             # states    = states[0]
             # actions   = actions[0]
-            # labels = labels[0]
 
             advantages = returns - values
         
@@ -276,6 +281,7 @@ class MaskGeneratingModel(nn.Module):
 
     def attribute_img(self, 
                       pixel_values, 
+                      labels,
                       image_size=224, 
                       patch_size=16, 
                       baseline=None, 
@@ -300,7 +306,7 @@ class MaskGeneratingModel(nn.Module):
         size = image_size // patch_size
         N, C, H, W = pixel_values.shape
         with torch.no_grad():
-            dist, value = self.get_dist_critic(pixel_values=pixel_values)
+            dist, value = self.get_dist_critic(pixel_values=pixel_values, labels=labels)
             sim_logits = dist.logits
             heatmap = torch.sigmoid(sim_logits).reshape(N, size, size)
         
