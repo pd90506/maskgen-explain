@@ -33,10 +33,9 @@ class MaskGeneratingModel(nn.Module):
         self.num_classes = num_classes
 
         # Freeze the base_model
-        # for param in self.base_model.parameters():
-        #     param.requires_grad = False
-        # for param in self.label_embedding.parameters():
-        #     param.requires_grad = False
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
     
     def get_dist_critic(self, pixel_values, labels):
         """
@@ -220,9 +219,12 @@ class MaskGeneratingModel(nn.Module):
         # # 确保 pixel_values 在正确的设备上
         # pixel_values = pixel_values.to(next(self.parameters()).device)
         state = pixel_values
-        with torch.no_grad():
-            pred_logits = model(pixel_values).logits # [N, num_classes]
-            label = pred_logits.argmax(-1).unsqueeze(-1) # [N, 1]
+        # with torch.no_grad():
+        #     pred_logits = model(pixel_values).logits # [N, num_classes]
+        #     label = pred_logits.argmax(-1).unsqueeze(-1) # [N, 1]
+
+        # replace the labels with random dummy labels
+        label = torch.randint(0, self.num_classes, (pixel_values.shape[0], 1)).to(pixel_values.device)
     
         with torch.no_grad():
             for step in range(num_steps):
