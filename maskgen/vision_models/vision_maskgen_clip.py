@@ -22,15 +22,16 @@ class MaskGeneratingModel(nn.Module):
         self.critic = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1)
+            nn.Linear(hidden_size, num_classes)
         )
         self.actor = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1),
+            nn.Linear(hidden_size, num_classes),
         )
         
         self.num_classes = num_classes
+        # self.logit_scale = nn.Parameter(num_classes / 2.0)
 
         # Freeze the base_model
         for param in self.base_model.parameters():
@@ -53,18 +54,31 @@ class MaskGeneratingModel(nn.Module):
         output = self.base_model(pixel_values)
 
         hidden_states = output['last_hidden_state'][:,1:,:]
-        hidden_states = hidden_states + label_emb.unsqueeze(1)
-        mu_logits = self.actor(hidden_states).squeeze(-1) # [N, L]
-        dist = Bernoulli(logits=mu_logits)
+        # hidden_states = hidden_states + label_emb.unsqueeze(1)
+        # mu_logits = self.actor(hidden_states).squeeze(-1) # [N, L]
+        mu_logits = self.actor(hidden_states) # [N, L, num_classes]
+        # we need softmax probability, instead of logits, to learn multiple classes in a single shot.
+        mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]   
+        # mu_logits = F.normalize(mu_logits, p=1, dim=-1)
+        labels_expanded = labels.unsqueeze(1).expand(-1, mu_logits.shape[1]) # [N, L]
+        labels_expanded = labels_expanded.unsqueeze(-1) # [N, L, 1]
+        # mu_logits = torch.gather(mu_logits, -1, labels_expanded).squeeze(-1) # [N, L]
+        mu_prob = torch.gather(mu_prob, -1, labels_expanded).squeeze(-1) # [N, L]
+        # print(mu_logits[0])
+        dist = Bernoulli(probs=mu_prob)
+        # TODO 改成logit？
+        # dist = Bernoulli(logits=mu_logits)
 
         pooled_output = output['last_hidden_state'][:,0,:] # [N, d]
-        pooled_output = pooled_output + label_emb
-        value = self.critic(pooled_output) # [N, 1]
+        # pooled_output = pooled_output + label_emb
+        value = self.critic(pooled_output) # [N, num_classes]
+        value = value.gather(1, labels.unsqueeze(-1)) # [N,]
 
-        return dist, value
+        return dist, value, mu_logits
 
 
-    def ppo_iter(self, mini_batch_size, states, actions, log_probs, returns, advantage, labels):
+
+    def ppo_iter(self, mini_batch_size, states, actions, log_probs, returns, advantage, logits, true_labels):
         """
         Generates mini-batches of data for Proximal Policy Optimization (PPO) algorithm.
         Parameters:
@@ -82,10 +96,10 @@ class MaskGeneratingModel(nn.Module):
         batch_size = states.size(0)
         for _ in range(batch_size // mini_batch_size):
             rand_ids = np.random.randint(0, batch_size, mini_batch_size)
-            yield states[rand_ids, :], actions[rand_ids, :], log_probs[rand_ids, :], returns[rand_ids, :], advantage[rand_ids, :], labels[rand_ids, :]
+            yield states[rand_ids, :], actions[rand_ids, :], log_probs[rand_ids, :], returns[rand_ids, :], advantage[rand_ids, :], logits[rand_ids, :], true_labels[rand_ids, :]
             
             
-    def ppo_update(self, optimizer, ppo_epochs, mini_batch_size, states, actions, log_probs, returns, advantages, labels, clip_param=0.2):
+    def ppo_update(self, optimizer, ppo_epochs, mini_batch_size, states, actions, log_probs, returns, advantages, logits, true_labels, clip_param=0.2):
         """
         Perform PPO (Proximal Policy Optimization) update for the given number of epochs.
         Parameters:
@@ -101,23 +115,34 @@ class MaskGeneratingModel(nn.Module):
         """
 
         for _ in range(ppo_epochs):
-            for state, action, old_log_probs, return_, advantage, label in self.ppo_iter(mini_batch_size, states, actions, log_probs, returns, advantages, labels):
+            for state, action, old_log_probs, return_, advantage, logit, true_label in self.ppo_iter(mini_batch_size, states, actions, log_probs, returns, advantages, logits, true_labels):
 
-                dist, value = self.get_dist_critic(state, labels=label)
+                dist, value, mu_logits = self.get_dist_critic(state, labels=true_label)
+
+                logit_expanded = logit.unsqueeze(1).expand_as(mu_logits)
+                mu_logits_softmax = torch.log_softmax(mu_logits, -1)
+                logit_expand_softmax = torch.softmax(logit_expanded, -1)
+                kl_div = F.kl_div(mu_logits_softmax, logit_expand_softmax, reduction='batchmean')
+                # true_dist, true_value = self.get_dist_critic(state, labels=true_label)
+                # value = value - true_value
+
                 entropy = dist.entropy().mean()
                 new_log_probs = dist.log_prob(action).sum(-1, keepdim=True)
 
                 ratio = (new_log_probs - old_log_probs).exp()
                 surr1 = ratio * advantage
                 surr2 = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param) * advantage
+
+                # true_log_probs = true_dist.log_prob(action).sum(-1, keepdim=True)
+                # true_ratio = (true_log_probs - old_log_probs).exp()
                 # PPO step
                 actor_loss  = - torch.min(surr1, surr2).mean()
                 # learn the value function based on the estimated return
-                critic_loss = (return_ - value).pow(2).mean()
+                critic_loss = (return_ - value).pow(2).mean() 
 
                 mask_loss = dist.logits.mean(-1).mean()
 
-                loss = 0.5 * critic_loss + actor_loss - 0.001 * entropy + 0.1 * mask_loss
+                loss = 0.5 * critic_loss + actor_loss - 0.0001 * entropy + kl_div #+ 0.1 * mask_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -130,7 +155,7 @@ class MaskGeneratingModel(nn.Module):
                  "returns": return_.mean().item(),
                  'entropy': entropy.item(),
                  "value": value.mean().item(),
-                 "mask": mask_loss.item()}
+                 "kl_div": kl_div.item()}
     
     @torch.no_grad()
     def compute_gae(self, next_value, rewards, masks, values, gamma=0.50, tau=0.95):
@@ -173,7 +198,7 @@ class MaskGeneratingModel(nn.Module):
 
     
     @torch.no_grad()
-    def get_action_reward(self, model, pixel_values, mask):
+    def get_action_reward(self, model, pixel_values, mask, label, true_label):
         """ 
         action : mask
         state : pixel_values
@@ -181,11 +206,12 @@ class MaskGeneratingModel(nn.Module):
         H, W = pixel_values.shape[-2:]
 
         pred_logits = model(pixel_values).logits # [N, num_classes]
-        pred = pred_logits.argmax(-1) # [N,]
-        selector = idx_to_selector(pred, self.num_classes) # [N, num_classes]
+        # pred = pred_logits.argmax(-1) # [N,]
+        # TODO: change pred to label
+        true_selector = idx_to_selector(true_label, self.num_classes) # [N, num_classes]
 
         pred_prob = torch.softmax(pred_logits, -1) # [N, num_classes]
-        pred_prob = (pred_prob * selector).sum(-1) # [N,]
+        pred_prob = (pred_prob * true_selector).sum(-1) # [N,]
 
         # bool_masked_pos = 1.0 - mask
         mask_size = int(math.sqrt(mask.shape[-1]))
@@ -194,12 +220,18 @@ class MaskGeneratingModel(nn.Module):
         masked_input = pixel_values * upsampled_mask # [N, C, H, W]
 
         # masked_pred_logits = model(pixel_values, bool_masked_pos=bool_masked_pos).logits # [N, num_classes]
-        masked_pred_prob = torch.softmax(model(masked_input).logits, -1) # [N, num_classes]
-        masked_pred_prob = (masked_pred_prob * selector).sum(-1) # [N,]
+        # masked_selector = idx_to_selector(label, self.num_classes) # [N, num_classes]
+        masked_pred_prob_all = torch.softmax(model(masked_input).logits, -1) # [N, num_classes]
+        # TODO: changed selector to masked_selector
+        # masked_pred_prob = (masked_pred_prob_all * masked_selector).sum(-1) # [N,]
 
-        reward = torch.exp(torch.log(masked_pred_prob) - torch.log(pred_prob)) # [N,]
+        masked_true_prob = (masked_pred_prob_all * true_selector).sum(-1)
+
+
+        reward = torch.exp(torch.log(masked_true_prob) - torch.log(pred_prob)) # [N,]
+        # reward = masked_true_prob - masked_pred_prob
+
         reward = reward * (torch.ones_like(mask).sum(-1)) / (mask.sum(-1) + 1) # [N,]
-        # print("reward", reward[0])
 
         state = pixel_values
         return state, reward
@@ -214,23 +246,29 @@ class MaskGeneratingModel(nn.Module):
         rewards   = []
         masks     = []
         entropy = 0
-        labels = [] 
+        logits = [] 
+        true_labels = []
 
         # # 确保 pixel_values 在正确的设备上
         # pixel_values = pixel_values.to(next(self.parameters()).device)
         state = pixel_values
-        # with torch.no_grad():
-        #     pred_logits = model(pixel_values).logits # [N, num_classes]
-        #     label = pred_logits.argmax(-1).unsqueeze(-1) # [N, 1]
+        with torch.no_grad():
+            pred_logits = model(pixel_values).logits # [N, num_classes]
+            true_label = pred_logits.argmax(-1).unsqueeze(-1) # [N, 1]
 
-        # replace the labels with random dummy labels
-        label = torch.randint(0, self.num_classes, (pixel_values.shape[0], 1)).to(pixel_values.device)
+        # TODO: replace the labels with random dummy labels
+        # label = torch.randint(0, self.num_classes, (pixel_values.shape[0], 1)).to(pixel_values.device)
+        # replace the labels with the second most probable label
+        # label = torch.topk(pred_logits, 2, dim=-1)[1][:, 1].unsqueeze(-1)
+        logit = pred_logits.clone()
+
+
     
         with torch.no_grad():
             for step in range(num_steps):
-                dist, value = self.get_dist_critic(pixel_values, labels=label)
+                dist, value, _ = self.get_dist_critic(pixel_values, labels=true_label)
                 action = dist.sample()
-                next_state, reward = self.get_action_reward(model, state, action)
+                next_state, reward = self.get_action_reward(model, state, action, logit, true_label.squeeze(-1))
 
                 log_prob = dist.log_prob(action).sum(-1, keepdim=True)
                 entropy += dist.entropy().mean()
@@ -245,12 +283,13 @@ class MaskGeneratingModel(nn.Module):
                 
                 states.append(state.clone())
                 actions.append(action.clone())
-                labels.append(label.clone())
+                logits.append(logit.clone())
+                true_labels.append(true_label.clone())
 
 
                 state = next_state 
             
-            _, next_value = self.get_dist_critic(state, label)
+            _, next_value, _ = self.get_dist_critic(state, true_label)
             
             returns = self.compute_gae(next_value, rewards, masks, values)
             # returns = self.compute_gae_static_state(next_value, rewards, masks, values)
@@ -260,7 +299,8 @@ class MaskGeneratingModel(nn.Module):
             values    = torch.cat(values)
             states    = torch.cat(states)
             actions   = torch.cat(actions)
-            labels    = torch.cat(labels)
+            logits    = torch.cat(logits)
+            true_labels = torch.cat(true_labels)
             # returns = returns[0]
             # log_probs = log_probs[0]
             # values    = values[0]
@@ -277,7 +317,7 @@ class MaskGeneratingModel(nn.Module):
         # print("labels", labels.shape)
 
 
-        loss_dict = self.ppo_update(optimizer, ppo_epochs, mini_batch_size, states, actions, log_probs, returns, advantages, labels)
+        loss_dict = self.ppo_update(optimizer, ppo_epochs, mini_batch_size, states, actions, log_probs, returns, advantages, logits, true_labels)
         return loss_dict
 
 
@@ -308,7 +348,7 @@ class MaskGeneratingModel(nn.Module):
         size = image_size // patch_size
         N, C, H, W = pixel_values.shape
         with torch.no_grad():
-            dist, value = self.get_dist_critic(pixel_values=pixel_values, labels=labels)
+            dist, value, _ = self.get_dist_critic(pixel_values=pixel_values, labels=labels)
             sim_logits = dist.logits
             heatmap = torch.sigmoid(sim_logits).reshape(N, size, size)
         
