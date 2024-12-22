@@ -1,3 +1,8 @@
+# positive + negative reward
+# multi-class sigmoid
+# mu_prob: sigmoid of mu_logits
+# sum of attributions: softmax of (scale * mu_logits) over all tokens
+
 import torch 
 import torch.nn as nn
 from maskgen.utils import idx_to_selector
@@ -35,6 +40,7 @@ class MaskGeneratingModel(nn.Module):
         )
         
         self.num_classes = num_classes
+        self.log_scale = nn.Parameter(torch.tensor(0.0))
 
         # Freeze the base_model
         if freeze_base:
@@ -61,8 +67,8 @@ class MaskGeneratingModel(nn.Module):
         # mu_logits = self.actor(hidden_states).squeeze(-1) # [N, L]
         mu_logits = self.actor(hidden_states) # [N, L, num_classes]
         # we need softmax probability, instead of logits, to learn multiple classes in a single shot.
-        mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]   
-        # mu_prob = torch.sigmoid(mu_logits) # [N, L, num_classes]
+        # mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]   
+        mu_prob = torch.sigmoid(mu_logits) # [N, L, num_classes]
         # mu_logits = F.normalize(mu_logits, p=1, dim=-1)
         labels_expanded = labels.unsqueeze(1).expand(-1, mu_logits.shape[1]) # [N, L]
         labels_expanded = labels_expanded.unsqueeze(-1) # [N, L, 1]
@@ -123,31 +129,12 @@ class MaskGeneratingModel(nn.Module):
                 dist, value, mu_logits = self.get_dist_critic(state, labels=true_label)
 
                 log_logit = torch.log_softmax(logit, -1)
-                mu_softmax = torch.softmax(mu_logits, -1)
-                mu_logits_sum_softmax = mu_softmax.mean(1)
+                scaled_mu_logits = mu_logits * self.log_scale.exp()
+                mu_softmax = torch.softmax(scaled_mu_logits, -1)
+                mu_sum_softmax = mu_softmax.mean(1)
                 # mu_logits_sum_softmax = mu_logits_sum_softmax / mu_logits_sum_softmax.sum(-1, keepdim=True)
-                log_mu_logits = torch.log(mu_logits_sum_softmax)
-                kl_div = F.kl_div(log_mu_logits, log_logit, reduction='batchmean', log_target=True)
-
-                # logit_expanded = logit.unsqueeze(1).expand_as(mu_logits)
-                # mu_logits_softmax = torch.log_softmax(mu_logits, -1)
-                # logit_expand_softmax = torch.softmax(logit_expanded, -1)
-                # kl_div = F.kl_div(mu_logits_softmax, logit_expand_softmax, reduction='batchmean')
-                # kl_div = kl_div / mu_logits_softmax.shape[1]
-                
-                # mu_prob = torch.sigmoid(mu_logits)
-                
-                # mu_prob_mean = mu_prob.mean(1) # [N, num_classes]
-                # log_mu_prob_mean = torch.log(mu_prob_mean / mu_prob_mean.sum(-1, keepdim=True))
-                # log_mu_prob_mean = torch.log(mu_prob_mean)
-                
-                # kl_div = F.kl_div(log_mu_prob_mean, log_logit, reduction='batchmean', log_target=True)
-                # mu_logits_sum_log_softmax = torch.log(mu_logits_sum_softmax)
-                # logging.debug(f"Shapes - mu_logits: {mu_logits_sum_log_softmax.shape}")
-                # logging.debug(f"mu_logits: {mu_logits_sum_log_softmax[0]}")
-                
-                # true_dist, true_value = self.get_dist_critic(state, labels=true_label)
-                # value = value - true_value
+                log_mu_sum_logits = torch.log(mu_sum_softmax)
+                kl_div = F.kl_div(log_mu_sum_logits, log_logit, reduction='batchmean', log_target=True)
 
                 entropy = dist.entropy().mean()
                 new_log_probs = dist.log_prob(action).sum(-1, keepdim=True)
@@ -161,7 +148,7 @@ class MaskGeneratingModel(nn.Module):
                 # learn the value function based on the estimated return
                 critic_loss = (return_ - value).pow(2).mean() 
 
-                loss = 0.5 * critic_loss + actor_loss - 0.0001 * entropy + self.config['l_kl'] * kl_div
+                loss = 0.5 * critic_loss + self.config['l_actor'] * actor_loss - self.config['l_entropy'] * entropy + self.config['l_kl'] * kl_div
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -174,7 +161,8 @@ class MaskGeneratingModel(nn.Module):
                 "returns": return_.mean().item(),
                 'entropy': entropy.item(),
                 "value": value.mean().item(),
-                "kl_div": kl_div.item()}
+                "kl_div": kl_div.item(),
+                "scale": self.log_scale.exp().item()}
     
     @torch.no_grad()
     def compute_gae(self, next_value, rewards, masks, values, gamma=0.50, tau=0.95):
@@ -220,15 +208,23 @@ class MaskGeneratingModel(nn.Module):
         mask_size = int(math.sqrt(mask.shape[-1]))
         reshaped_mask = mask.reshape(-1, mask_size, mask_size).unsqueeze(1) # [N, 1, size, size]
         upsampled_mask = F.interpolate(reshaped_mask, size=(H, W), mode='nearest') # [N, 1, H, W]
+
+        # positive masked input
         masked_input = pixel_values * upsampled_mask # [N, C, H, W]
-
         masked_pred_prob_all = torch.softmax(model(masked_input).logits, -1) # [N, num_classes]
-
         masked_true_prob = (masked_pred_prob_all * true_selector).sum(-1)
+        # negative masked input
+        neg_masked_input = pixel_values * (1 - upsampled_mask) # [N, C, H, W]
+        neg_masked_pred_prob_all = torch.softmax(model(neg_masked_input).logits, -1) # [N, num_classes]
+        neg_masked_true_prob = (neg_masked_pred_prob_all * true_selector).sum(-1)
 
-        reward = masked_true_prob
+        # reward = masked_true_prob - neg_masked_true_prob
+        # reward = reward * (torch.ones_like(mask).sum(-1)) / (mask.sum(-1) + 1) # [N,]
+        reward1 = masked_true_prob * (torch.ones_like(mask).sum(-1)) / (mask.sum(-1) + 1)
+        reward2 = neg_masked_true_prob * (torch.ones_like(mask).sum(-1)) / ((1 - mask).sum(-1) + 1)
+        reward = reward1 - reward2
 
-        reward = reward * (torch.ones_like(mask).sum(-1)) / (mask.sum(-1) + 1) # [N,]
+        
 
         state = pixel_values
         return state, reward
