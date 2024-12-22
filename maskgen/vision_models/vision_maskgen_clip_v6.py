@@ -19,19 +19,21 @@ class MaskGeneratingModel(nn.Module):
         self.base_model = base_model
         self.config = config
 
+        self.label_emb = nn.Embedding(num_classes, hidden_size)
+
         self.critic = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, num_classes)
+            nn.Linear(hidden_size, 1)
         )
         self.actor = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, num_classes),
+            nn.Linear(hidden_size, 1),
         )
         
         self.num_classes = num_classes
@@ -57,26 +59,16 @@ class MaskGeneratingModel(nn.Module):
         output = self.base_model(pixel_values)
 
         hidden_states = output['last_hidden_state'][:,1:,:]
-        # hidden_states = hidden_states + label_emb.unsqueeze(1)
-        # mu_logits = self.actor(hidden_states).squeeze(-1) # [N, L]
-        mu_logits = self.actor(hidden_states) # [N, L, num_classes]
-        # we need softmax probability, instead of logits, to learn multiple classes in a single shot.
-        mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]   
-        # mu_prob = torch.sigmoid(mu_logits) # [N, L, num_classes]
-        # mu_logits = F.normalize(mu_logits, p=1, dim=-1)
-        labels_expanded = labels.unsqueeze(1).expand(-1, mu_logits.shape[1]) # [N, L]
-        labels_expanded = labels_expanded.unsqueeze(-1) # [N, L, 1]
-        # mu_logits = torch.gather(mu_logits, -1, labels_expanded).squeeze(-1) # [N, L]
-        mu_prob = torch.gather(mu_prob, -1, labels_expanded).squeeze(-1) # [N, L]
-        # print(mu_logits[0])
+        label_emb = self.label_emb(labels) # [N, d]
+        hidden_states = hidden_states + label_emb.unsqueeze(1)
+        mu_logits = self.actor(hidden_states).squeeze(-1) # [N, L]
+        mu_prob = torch.sigmoid(mu_logits) # [N, L]
+
         dist = Bernoulli(probs=mu_prob)
-        # TODO 改成logit？
-        # dist = Bernoulli(logits=mu_logits)
 
         pooled_output = output['last_hidden_state'][:,0,:] # [N, d]
-        # pooled_output = pooled_output + label_emb
-        value = self.critic(pooled_output) # [N, num_classes]
-        value = value.gather(1, labels.unsqueeze(-1)) # [N,]
+        pooled_output = pooled_output + label_emb
+        value = self.critic(pooled_output) # [N, 1]
 
         return dist, value, mu_logits
 
@@ -121,33 +113,7 @@ class MaskGeneratingModel(nn.Module):
             for state, action, old_log_probs, return_, advantage, logit, true_label in self.ppo_iter(mini_batch_size, states, actions, log_probs, returns, advantages, logits, true_labels):
 
                 dist, value, mu_logits = self.get_dist_critic(state, labels=true_label)
-
-                log_logit = torch.log_softmax(logit, -1)
-                mu_softmax = torch.softmax(mu_logits, -1)
-                mu_logits_sum_softmax = mu_softmax.mean(1)
-                # mu_logits_sum_softmax = mu_logits_sum_softmax / mu_logits_sum_softmax.sum(-1, keepdim=True)
-                log_mu_logits = torch.log(mu_logits_sum_softmax)
-                kl_div = F.kl_div(log_mu_logits, log_logit, reduction='batchmean', log_target=True)
-
-                # logit_expanded = logit.unsqueeze(1).expand_as(mu_logits)
-                # mu_logits_softmax = torch.log_softmax(mu_logits, -1)
-                # logit_expand_softmax = torch.softmax(logit_expanded, -1)
-                # kl_div = F.kl_div(mu_logits_softmax, logit_expand_softmax, reduction='batchmean')
-                # kl_div = kl_div / mu_logits_softmax.shape[1]
                 
-                # mu_prob = torch.sigmoid(mu_logits)
-                
-                # mu_prob_mean = mu_prob.mean(1) # [N, num_classes]
-                # log_mu_prob_mean = torch.log(mu_prob_mean / mu_prob_mean.sum(-1, keepdim=True))
-                # log_mu_prob_mean = torch.log(mu_prob_mean)
-                
-                # kl_div = F.kl_div(log_mu_prob_mean, log_logit, reduction='batchmean', log_target=True)
-                # mu_logits_sum_log_softmax = torch.log(mu_logits_sum_softmax)
-                # logging.debug(f"Shapes - mu_logits: {mu_logits_sum_log_softmax.shape}")
-                # logging.debug(f"mu_logits: {mu_logits_sum_log_softmax[0]}")
-                
-                # true_dist, true_value = self.get_dist_critic(state, labels=true_label)
-                # value = value - true_value
 
                 entropy = dist.entropy().mean()
                 new_log_probs = dist.log_prob(action).sum(-1, keepdim=True)
@@ -161,7 +127,7 @@ class MaskGeneratingModel(nn.Module):
                 # learn the value function based on the estimated return
                 critic_loss = (return_ - value).pow(2).mean() 
 
-                loss = 0.5 * critic_loss + actor_loss - 0.0001 * entropy + self.config['l_kl'] * kl_div
+                loss = 0.5 * critic_loss + self.config['l_actor'] * actor_loss - self.config['l_entropy'] * entropy #+ self.config['l_local_div'] * local_div
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -174,7 +140,9 @@ class MaskGeneratingModel(nn.Module):
                 "returns": return_.mean().item(),
                 'entropy': entropy.item(),
                 "value": value.mean().item(),
-                "kl_div": kl_div.item()}
+                # "kl_div": kl_div.item()}
+                #"local_div": local_div.item()
+                }
     
     @torch.no_grad()
     def compute_gae(self, next_value, rewards, masks, values, gamma=0.50, tau=0.95):
@@ -229,6 +197,7 @@ class MaskGeneratingModel(nn.Module):
         reward = masked_true_prob
 
         reward = reward * (torch.ones_like(mask).sum(-1)) / (mask.sum(-1) + 1) # [N,]
+        # reward = reward / (mask.sum(-1) + 1) # [N,]
 
         state = pixel_values
         return state, reward
@@ -258,8 +227,9 @@ class MaskGeneratingModel(nn.Module):
         logit = pred_logits.clone()
 
         def get_epsilon_greedy_action(dist, epsilon=0.05):
+        
             # Create a random mask with shape same as dist.probs
-            random_mask = (torch.rand_like(dist.probs) < epsilon)
+            random_mask = (torch.rand_like(dist.probs) < epsilon)  # True with prob 0.2, False with prob 0.8
 
             # Get both random actions and sampled actions
             random_actions = torch.randint_like(dist.probs, low=0, high=2)
@@ -278,12 +248,17 @@ class MaskGeneratingModel(nn.Module):
                 
                 next_state, reward = self.get_action_reward(model, state, action, logit, true_label.squeeze(-1))
 
-                log_prob = dist.log_prob(action).sum(-1, keepdim=True)
+                log_prob = dist.log_prob(action).sum(-1, keepdim=True) 
                 entropy += dist.entropy().mean()
 
                 log_probs.append(log_prob)
                 values.append(value)
-                rewards.append(reward.unsqueeze(-1))
+
+                # we want to maximize this to achieve minimum KL divergence
+                d = action.shape[-1] # size of the mask
+                reward = torch.log(reward.unsqueeze(-1)) - log_prob - d * torch.log(torch.tensor(2.0, device=action.device))
+                
+                rewards.append(reward)
                 if step == num_steps - 1:
                     masks.append(torch.zeros_like(reward).unsqueeze(-1))
                 else:

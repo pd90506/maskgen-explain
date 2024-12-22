@@ -1,6 +1,8 @@
 import torch
 import torch.nn.functional as F
 
+EPSILON = 1e-5
+
 def idx_to_selector(idx_tensor, selection_size):
     """
     Convert a labels indices tensor of shape [batch_size] 
@@ -25,7 +27,7 @@ def obtain_masks_on_topk(attribution, topk, mode='ins'):
     """
     H_a, W_a = attribution.shape[-2:]
     attribution = attribution.reshape(-1, H_a * W_a) # [N, H_a*W_a]
-    attribution_perturb = attribution + 1e-5*torch.randn_like(attribution) # to avoid equal attributions (typically all zeros or all ones)
+    attribution_perturb = attribution + EPSILON*torch.randn_like(attribution) # to avoid equal attributions (typically all zeros or all ones)
     
     attribution_size = H_a * W_a
     a, _ = torch.topk(attribution_perturb, k=int(topk * attribution_size / 100), dim=-1)
@@ -51,8 +53,8 @@ def obtain_masked_input_on_topk(x, attribution, topk, mode='ins'):
 
     masked_input = x * mask
     # mean_pixel = masked_input.sum(dim=(-1, -2), keepdim=True) / mask.sum(dim=(-1, -2), keepdim=True)
-    # mean_pixel = x.mean(dim=(-1, -2), keepdim=True)
-    # masked_input = masked_input + (1 - mask) * mean_pixel
+    mean_pixel = x.mean(dim=(-1, -2), keepdim=True)
+    masked_input = masked_input + (1 - mask) * mean_pixel
     return masked_input
 
 
@@ -63,7 +65,7 @@ def obtain_masks_sequence(attribution):
     H_a, W_a = attribution.shape[-2:]
     attribution_size = H_a * W_a
     attribution = attribution.reshape(-1, H_a * W_a) # [1, H_a*W_a]
-    attribution = attribution + 1e-4 * torch.randn_like(attribution)
+    attribution = attribution + EPSILON * torch.randn_like(attribution)
     a, _ = torch.sort(attribution, dim=-1, descending=True)
     idx = torch.ceil(torch.arange(100) * attribution_size / 100).int()
     a = a.reshape(-1, 1)

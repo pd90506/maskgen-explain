@@ -1,0 +1,14 @@
+#!/bin/bash
+#$ -M dpan@nd.edu      # Email address for job notification
+#$ -m abe               # Send mail when job begins, ends and aborts
+#$ -q gpu@qa-a100-005             # Specify queue
+#$ -l gpu=1
+#$ -pe smp 8           # Specify number of cores to use.
+#$ -N train_vision_clip_peft       # Specify job name
+
+module load conda
+conda activate transformer_explain
+
+nvidia-smi
+
+python train_vision_clip_peft_v5.py

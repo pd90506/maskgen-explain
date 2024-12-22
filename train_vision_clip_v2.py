@@ -10,8 +10,6 @@ with open(json_path, 'r') as file:
 hf_home = env_config['HF_HOME']
 # Set the HF_HOME environment variable
 os.environ['HF_HOME'] = hf_home
-os.environ['TRANSFORMERS_CACHE'] = hf_home
-os.environ['HF_DATASETS_CACHE'] = hf_home
 # Set the access token to huggingface hub
 access_token = env_config['access_token']
 os.environ['HUGGINGFACE_HUB_TOKEN'] = access_token
@@ -36,7 +34,7 @@ from torchvision.transforms import (
 
 from transformers import ViTImageProcessor, ViTForImageClassification, ViTModel, ViTConfig
 from datasets import load_dataset,load_metric
-from maskgen.vision_models.vision_maskgen_clip_v8 import MaskGeneratingModel
+from maskgen.vision_models.vision_maskgen_clip_v3 import MaskGeneratingModel
 
 import wandb
 
@@ -61,18 +59,9 @@ def load_data(seed=42):
     val_ds = splits['test']
     return train_ds, val_ds, test_ds
 
-
-def load_full_data(seed=42): 
-    dataset = load_dataset('imagenet-1k', split='train',
-                            # streaming=True, 
-                            token=access_token)
-    return dataset
-
 def collate_fn(examples):
-    pixel_values = torch.stack([example["pixel_values"] for example in examples]) 
+    pixel_values = torch.stack([example["pixel_values"] for example in examples])
     labels = torch.tensor([example["label"] for example in examples])
-    # pixel_values = examples['pixel_values'].clone().detach()
-    # labels = examples['label'].clone().detach()
     return {"pixel_values": pixel_values, "labels": labels}
 
 def get_dataloader(dataset, processor, batch_size):
@@ -99,7 +88,6 @@ def get_dataloader(dataset, processor, batch_size):
         example_batch["pixel_values"] = [transforms(image.convert("RGB")) for image in example_batch["image"]]
         return example_batch
     dataset.set_transform(preprocess)
-
     dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, shuffle=True, num_workers=num_workers)
     return dataloader
 
@@ -117,14 +105,11 @@ def main():
         'num_steps': 5,
         'mini_batch_size' :512,
         'ppo_epochs': 1,
-        'epsilon': 0.0,
+        'epsilon': 0.,
         'lr': 1e-4,
-        'clip_param': 0.2,
+        'clip_param': 0.1,
         'l_kl': 1,
-        'epochs': 1,
-        'l_entropy': 1e-4,
-        'l_actor': 1,
-        'name': 'vision_clip_v8'}
+        'epochs': 5}
 
     wandb.login(key="9e299480f41828e61823fbbbfdcca0afcb4b9bfa")
     wandb.init(project="vision-clip", entity="pd90506-nd", config=wandb_config)
@@ -151,12 +136,11 @@ def main():
 
     # get data and dataloaders
     # train_ds, val_ds, test_ds = load_data()
-    train_ds = load_full_data()
-    # train_ds = load_dataset("mrm8488/ImageNet1K-val", split='train')
+    train_ds = load_dataset("mrm8488/ImageNet1K-val", split='train')
     train_dataloader = get_dataloader(train_ds, processor, batch_size=batch_size)
 
     # Create the explainer g(x)
-    exp_base_model = ViTModel.from_pretrained(pretrained_name)  # was VitModel
+    exp_base_model = ViTModel.from_pretrained(pretrained_name) 
     mask_gen_model = MaskGeneratingModel(base_model=exp_base_model, hidden_size=config.hidden_size, num_classes=config.num_labels, config=wandb_config)
     mask_gen_model.to(device)
 
@@ -164,7 +148,6 @@ def main():
     optimizer = torch.optim.Adam(mask_gen_model.parameters(), lr=lr)
 
     for epoch in range(epochs):
-        prefix = wandb.run.name
         pbar = tqdm(train_dataloader)
         for idx, data in enumerate(pbar):
             pixel_values = data['pixel_values'].to(device)
@@ -173,8 +156,8 @@ def main():
 
             wandb.log(loss_dict)
 
-            if (idx+1) % 100 == 0:
-                save_model(mask_gen_model, f"{wandb_config['name']}_{prefix}_epoch_{epoch+1}_step_{idx+1}_vision_clip_")
+        prefix = wandb.run.name
+        save_model(mask_gen_model, f"{prefix}_vision_clip_")
 
 
 

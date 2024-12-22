@@ -61,8 +61,8 @@ class MaskGeneratingModel(nn.Module):
         # mu_logits = self.actor(hidden_states).squeeze(-1) # [N, L]
         mu_logits = self.actor(hidden_states) # [N, L, num_classes]
         # we need softmax probability, instead of logits, to learn multiple classes in a single shot.
-        mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]   
-        # mu_prob = torch.sigmoid(mu_logits) # [N, L, num_classes]
+        # mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]   
+        mu_prob = torch.sigmoid(mu_logits) # [N, L, num_classes]
         # mu_logits = F.normalize(mu_logits, p=1, dim=-1)
         labels_expanded = labels.unsqueeze(1).expand(-1, mu_logits.shape[1]) # [N, L]
         labels_expanded = labels_expanded.unsqueeze(-1) # [N, L, 1]
@@ -161,7 +161,7 @@ class MaskGeneratingModel(nn.Module):
                 # learn the value function based on the estimated return
                 critic_loss = (return_ - value).pow(2).mean() 
 
-                loss = 0.5 * critic_loss + actor_loss - 0.0001 * entropy + self.config['l_kl'] * kl_div
+                loss = 0.5 * critic_loss + actor_loss - 0.0001 * entropy #+ self.config['l_kl'] * kl_div
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -260,6 +260,9 @@ class MaskGeneratingModel(nn.Module):
         def get_epsilon_greedy_action(dist, epsilon=0.05):
             # Create a random mask with shape same as dist.probs
             random_mask = (torch.rand_like(dist.probs) < epsilon)
+        
+            # Create a random mask with shape same as dist.probs
+            random_mask = (torch.rand_like(dist.probs) < epsilon)  # True with prob 0.2, False with prob 0.8
 
             # Get both random actions and sampled actions
             random_actions = torch.randint_like(dist.probs, low=0, high=2)
