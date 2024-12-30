@@ -1,3 +1,19 @@
+# custom
+lightning_logs/
+log/
+env_config.json
+attvis/
+mask_gen_model/
+text_mask_gen_model/
+reference code/
+trained/
+results/
+attvis/results/
+attvis/
+pytorch-grad-cam/
+data/
+bert_models/
+wandb/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
