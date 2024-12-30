@@ -36,7 +36,7 @@ from torchvision.transforms import (
 
 from transformers import ViTImageProcessor, ViTForImageClassification, ViTModel, ViTConfig
 from datasets import load_dataset,load_metric
-from maskgen.vision_models.vision_maskgen_clip_v8 import MaskGeneratingModel
+from maskgen.vision_models.vision_maskgen_clip_v9 import MaskGeneratingModel
 
 import wandb
 
