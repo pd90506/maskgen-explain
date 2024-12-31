@@ -1,17 +1,17 @@
 training:
-  batch_size: 32
+  batch_size: 256
   num_steps: 5
-  mini_batch_size: 16
-  ppo_epochs: 1
+  mini_batch_size: 256
+  ppo_epochs: 2
   epsilon: 0.0
   lr: 1.0e-5
   clip_param: 0.2
-  l_kl: 0
+  l_kl: 1.0
   l_actor: 1.0
-  l_entropy: 0.1
+  l_entropy: 0.0001
   gamma: 0.50
   tau: 0.95
-  max_epochs: 5
+  max_epochs: 1
   save_interval: 100
   save_path: "./checkpoints"
 
