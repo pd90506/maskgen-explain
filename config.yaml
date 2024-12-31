@@ -1,0 +1,23 @@
+training:
+  batch_size: 32
+  num_steps: 5
+  mini_batch_size: 16
+  ppo_epochs: 1
+  epsilon: 0.0
+  lr: 1.0e-5
+  clip_param: 0.2
+  l_kl: 0
+  l_actor: 1.0
+  l_entropy: 0.1
+  gamma: 0.50
+  tau: 0.95
+  max_epochs: 5
+  save_interval: 100
+  save_path: "./checkpoints"
+
+model:
+  pretrained_name: "google/vit-base-patch16-224"
+  freeze_base: false
+
+wandb:
+  project: "vision_maskgen" 

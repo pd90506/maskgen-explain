@@ -1,19 +1,10 @@
-from transformers import (
-    ViTImageProcessor,
-    ViTForImageClassification,
-    ViTModel,
-    ViTConfig,
-)
-
+from transformers import ViTImageProcessor, ViTForImageClassification, ViTConfig
 
 def get_pred_model(pretrained_name, device):
     """Initialize and load the prediction model"""
     
-    # Load configuration and processor
-    model_config = ViTConfig.from_pretrained(pretrained_name)
+    # Load processor and initialize prediction model
     processor = ViTImageProcessor.from_pretrained(pretrained_name)
-    
-    # Initialize prediction model
     pred_model = ViTForImageClassification.from_pretrained(pretrained_name)
     pred_model.to(device)
     pred_model.eval()
