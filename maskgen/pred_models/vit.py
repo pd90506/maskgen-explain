@@ -1,10 +1,6 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from PIL import Image
 import requests
-import numpy as np
-import matplotlib.pyplot as plt
 from transformers import (
     ViTImageProcessor,
     ViTForImageClassification,

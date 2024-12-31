@@ -11,4 +11,4 @@ conda activate transformer_explain
 
 nvidia-smi
 
-python train_vision_clip.py
+python train_vision_maskgen.py
