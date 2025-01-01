@@ -156,6 +156,31 @@ class PPOTrainer:
             'entropy': entropy
         }
 
+    def ppo_iter(self, mini_batch_size: int, states: torch.Tensor, actions: torch.Tensor, 
+                 log_probs: torch.Tensor, returns: torch.Tensor, advantages: torch.Tensor, 
+                 logits: torch.Tensor, pseudo_labels: torch.Tensor):
+        """Generate mini-batches for PPO updates.
+        
+        Args:
+            mini_batch_size: Size of each mini-batch
+            states: Input states/images
+            actions: Selected actions (masks)
+            log_probs: Log probabilities of actions
+            returns: Computed returns
+            advantages: Advantage estimates
+            logits: Original model logits
+            pseudo_labels: Predicted labels
+            
+        Yields:
+            Tuple of tensors for each mini-batch
+        """
+        batch_size = states.size(0)
+        for _ in range(batch_size // mini_batch_size):
+            rand_ids = torch.randint(0, batch_size, (mini_batch_size,), device=states.device)
+            yield (states[rand_ids], actions[rand_ids], log_probs[rand_ids], 
+                  returns[rand_ids], advantages[rand_ids], logits[rand_ids], 
+                  pseudo_labels[rand_ids])
+
     def train_epoch(self, dataloader, epoch, save_path):
         """Train for one epoch."""
         epoch_stats = {
@@ -191,20 +216,18 @@ class PPOTrainer:
                 advantages = returns - values
 
             # PPO update
-            batch_size = states.size(0)
+            ppo_iterator = self.ppo_iter(self.config['mini_batch_size'], states, actions, log_probs, returns, advantages, logits, pseudo_labels)
+
             for _ in range(self.config['ppo_epochs']):
-                indices = torch.randperm(batch_size)
-                for start in range(0, batch_size, self.config['mini_batch_size']):
-                    end = start + self.config['mini_batch_size']
-                    mb_indices = indices[start:end]
+                for state, action, old_log_probs, return_, advantage, logit, pseudo_label in ppo_iterator:
                     
-                    dist, value, mu_mean_prob = self.maskgen.get_dist_critic(states[mb_indices], pseudo_labels[mb_indices])
+                    dist, value, mu_mean_prob = self.maskgen.get_dist_critic(state, pseudo_label)
                     
                     actor_loss, critic_loss, entropy, kl_loss = self.compute_losses(
                         dist, value, mu_mean_prob,
-                        actions[mb_indices], returns[mb_indices],
-                        advantages[mb_indices], log_probs[mb_indices],
-                        logits[mb_indices]
+                        action, return_,
+                        advantage, old_log_probs,
+                        logit
                     )
                     
                     loss = (0.5 * critic_loss + 

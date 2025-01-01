@@ -28,7 +28,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
         'wandb_project': config['wandb']['project']
     })
 
-    flat_config['api_key'] = config['api_key']
+    flat_config.update(config['dataset'])
 
     return flat_config
 
@@ -63,7 +63,7 @@ def main():
     )
 
     # Data preprocessing
-    dataset = load_imagenet(split='train', access_token=config['api_key'])
+    dataset = load_imagenet(split=config['dataset_split'], access_token=config['api_key'])
     preprocess = get_preprocess(processor)
     dataset.set_transform(preprocess)
     
