@@ -4,7 +4,7 @@ training:
   mini_batch_size: 256
   ppo_epochs: 2
   epsilon: 0.0
-  lr: 1.0e-5
+  lr: 5.0e-5
   clip_param: 0.2
   l_kl: 1.0
   l_actor: 1.0
@@ -19,7 +19,10 @@ model:
   pretrained_name: "google/vit-base-patch16-224"
   freeze_base: false
 
+dataset:
+  dataset_name: "imagenet"
+  dataset_split: "tiny"
+  api_key: "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"
+
 wandb:
   project: "vision_maskgen" 
-
-api_key: "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"
