@@ -39,8 +39,8 @@ class PPOTrainer:
         """
         H, W = pixel_values.shape[-2:]
 
-        pred_logits = self.target_model(pixel_values).logits # [N, num_classes]
-        pred_prob = torch.softmax(pred_logits, -1).gather(1, label) # [N, 1]
+        # pred_logits = self.target_model(pixel_values).logits # [N, num_classes]
+        # pred_prob = torch.softmax(pred_logits, -1).gather(1, label) # [N, 1]
 
         mask_size = int(math.sqrt(mask.shape[-1]))
         reshaped_mask = mask.reshape(-1, mask_size, mask_size).unsqueeze(1)
@@ -217,7 +217,7 @@ class PPOTrainer:
 
             # PPO update
             ppo_iterator = self.ppo_iter(self.config['mini_batch_size'], states, actions, log_probs, returns, advantages, logits, pseudo_labels)
-
+            batch_size = states.size(0)
             for _ in range(self.config['ppo_epochs']):
                 for state, action, old_log_probs, return_, advantage, logit, pseudo_label in ppo_iterator:
                     
