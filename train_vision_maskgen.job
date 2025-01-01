@@ -12,6 +12,5 @@ conda activate transformer_explain
 nvidia-smi
 
 export HF_HOME=/scratch365/dpan/hfcache 
-export HUGGINGFACE_HUB_TOKEN=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
 
 python train_vision_maskgen.py
