@@ -216,9 +216,9 @@ class PPOTrainer:
                 advantages = returns - values
 
             # PPO update
-            ppo_iterator = self.ppo_iter(self.config['mini_batch_size'], states, actions, log_probs, returns, advantages, logits, pseudo_labels)
             batch_size = states.size(0)
             for _ in range(self.config['ppo_epochs']):
+                ppo_iterator = self.ppo_iter(self.config['mini_batch_size'], states, actions, log_probs, returns, advantages, logits, pseudo_labels)
                 for state, action, old_log_probs, return_, advantage, logit, pseudo_label in ppo_iterator:
                     
                     dist, value, mu_mean_prob = self.maskgen.get_dist_critic(state, pseudo_label)
