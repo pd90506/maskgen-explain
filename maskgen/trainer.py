@@ -7,6 +7,8 @@ from torch.utils.data import DataLoader
 import wandb
 from tqdm import tqdm
 from maskgen.vision_models.vision_maskgen import MaskGeneratingModel
+import json
+import os
 
 
 class PPOTrainer:
@@ -267,7 +269,7 @@ class PPOTrainer:
             
             # Save checkpoint every 100 batches
             if (batch_idx + 1) % self.config['save_interval'] == 0:
-                self.maskgen.save_model(f'{save_path}/maskgen_epoch_{epoch}_batch_{batch_idx}')
+                self.maskgen.save_model(f'{save_path}/maskgen_epoch_{epoch}_batch_{batch_idx+1}')
         
         # Average epoch stats (if needed)
         num_batches = len(dataloader)
@@ -279,6 +281,14 @@ class PPOTrainer:
         """Full training loop."""
         num_epochs = self.config['max_epochs']
         save_path = self.config['save_path']
+        save_path = f'{save_path}/{wandb.run.name}'
+
+        # save config as json, if not exists, create the directory
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        with open(f'{save_path}/config.json', 'w') as f:
+            json.dump(self.config, f)
+
         for epoch in range(num_epochs):
             self.maskgen.train()
             stats = self.train_epoch(train_dataloader, epoch, save_path)

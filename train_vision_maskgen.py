@@ -7,18 +7,19 @@ import wandb
 import yaml
 import os
 from typing import Dict, Any
+import json
 
 def load_config(config_path: str) -> Dict[str, Any]:
-    """Load configuration from YAML file.
+    """Load configuration from JSON file.
     
     Args:
-        config_path: Path to the YAML configuration file
+        config_path: Path to the JSON configuration file
         
     Returns:
         Dictionary containing configuration parameters
     """
     with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+        config = json.load(f)
     
     # Flatten config for easier access
     flat_config = {}
@@ -27,14 +28,13 @@ def load_config(config_path: str) -> Dict[str, Any]:
     flat_config.update({
         'wandb_project': config['wandb']['project']
     })
-
     flat_config.update(config['dataset'])
 
     return flat_config
 
 def main():
     # Load configuration
-    config = load_config('config.yaml')
+    config = load_config('config.json')
     
     # Create save directory if it doesn't exist
     if not os.path.exists(config['save_path']):

@@ -147,6 +147,7 @@ class MaskGeneratingModel(nn.Module):
             'critic_state_dict': self.critic.state_dict(),
         }, f"{save_path}/other_components.pt")
 
+
     @classmethod
     def load_model(cls, base_model_name: str, save_path: str, hidden_size: int, num_classes: int):
         """Load model with PEFT adapters."""
