@@ -27,7 +27,9 @@ def load_config(config_path: str) -> Dict[str, Any]:
     flat_config.update({
         'wandb_project': config['wandb']['project']
     })
-    
+
+    flat_config['api_key'] = config['api_key']
+
     return flat_config
 
 def main():
