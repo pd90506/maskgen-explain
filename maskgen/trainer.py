@@ -53,7 +53,7 @@ class PPOTrainer:
         masked_true_prob = masked_pred_prob_all.gather(1, label) # [N, 1]
         
         reward = masked_true_prob * (torch.ones_like(mask).sum(-1, keepdim=True)) / (mask.sum(-1, keepdim=True) + 1)
-        reward = torch.log(reward + 1e-6)
+        # reward = torch.log(reward + 1e-6)
         
         return pixel_values, reward
 
