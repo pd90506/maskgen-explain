@@ -16,7 +16,9 @@ bert_models/
 wandb/
 checkpoints/
 archive/
+
 config.json
+eval_config.json
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
