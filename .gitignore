@@ -19,6 +19,7 @@ archive/
 
 config.json
 eval_config.json
+train_vision_maskgen.job
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
