@@ -1,12 +1,12 @@
 from transformers import ViTImageProcessor, ViTForImageClassification, ViTModel, ViTConfig
 from maskgen.vision_models.vision_maskgen import MaskGeneratingModel, convert_to_peft
 from maskgen.utils import get_preprocess, collate_fn, load_imagenet
+from maskgen.utils.img_utils import plot_overlap_np
 from torch.utils.data import DataLoader
 import torch
 import json
 import os
 import matplotlib.pyplot as plt
-import seaborn as sns
 from tqdm import tqdm
 import numpy as np
 from typing import Dict, Any
@@ -24,13 +24,22 @@ def load_config(config_path: str) -> Dict[str, Any]:
     
     return flat_config
 
-def plot_heatmap(mask: np.ndarray, image_id: int, save_path: str):
-    """Plot and save heatmap visualization."""
-    plt.figure(figsize=(6, 6))
-    sns.heatmap(mask, cmap='viridis', xticklabels=False, yticklabels=False)
-    plt.title(f'Attention Mask - Image {image_id}')
-    plt.savefig(os.path.join(save_path, f'heatmap_{image_id}.png'))
+def save_visualization(image: np.ndarray, heatmap: np.ndarray, 
+                      image_id: int, save_path: str, 
+                      img_mean: list, img_std: list):
+    """Save visualization of image and its heatmap."""
+    plt.figure(figsize=(12, 6))
+    
+    # Generate visualization using plot_overlap_np
+    original_img, heatmap_img = plot_overlap_np(image, heatmap, img_mean, img_std)
+    
+    # Save the plot
+    plt.savefig(os.path.join(save_path, f'vis_{image_id}.png'))
     plt.close()
+    
+    # Optionally save individual components
+    np.save(os.path.join(save_path, f'heatmap_{image_id}.npy'), heatmap)
+    np.save(os.path.join(save_path, f'image_{image_id}.npy'), original_img)
 
 def main():
     # Load configuration
@@ -48,23 +57,20 @@ def main():
     vit_config = ViTConfig.from_pretrained(pretrained_name)
     processor = ViTImageProcessor.from_pretrained(pretrained_name)
     
+    # Get image normalization parameters
+    img_mean = processor.image_mean
+    img_std = processor.image_std
+
     # Target model for explanation
     target_model = ViTForImageClassification.from_pretrained(pretrained_name)
     target_model.eval()
     target_model.to(device)
 
-    # Create and load maskgen model
-    base_model = ViTModel.from_pretrained(pretrained_name)
-    peft_model = convert_to_peft(base_model)
-    maskgen_model = MaskGeneratingModel(
-        base_model=peft_model,
-        hidden_size=vit_config.hidden_size,
-        num_classes=vit_config.num_labels,
-        freeze_base=config['freeze_base']
-    )
-    
     # Load trained weights
-    maskgen_model.load_state_dict(torch.load(config['model_path']))
+    maskgen_model = MaskGeneratingModel.load_model(base_model_name=pretrained_name, 
+                                   save_path=config['model_path'], 
+                                   hidden_size=vit_config.hidden_size, 
+                                   num_classes=vit_config.num_labels)
     maskgen_model.eval()
     maskgen_model.to(device)
 
@@ -97,10 +103,20 @@ def main():
             # Reshape masks to 14x14
             masks = masks.reshape(-1, 14, 14).cpu().numpy()
             
-            # Plot and save heatmaps
-            for i, mask in enumerate(masks):
+            # Get original images
+            images = pixel_values.cpu().numpy()
+            
+            # Save visualizations for each image in batch
+            for i, (image, mask) in enumerate(zip(images, masks)):
                 image_id = batch_idx * config['batch_size'] + i
-                plot_heatmap(mask, image_id, config['results_path'])
+                save_visualization(
+                    image=image,
+                    heatmap=mask,
+                    image_id=image_id,
+                    save_path=config['results_path'],
+                    img_mean=img_mean,
+                    img_std=img_std
+                )
                 
             # Only process the first few batches if specified
             if config['max_samples'] and (batch_idx + 1) * config['batch_size'] >= config['max_samples']:
