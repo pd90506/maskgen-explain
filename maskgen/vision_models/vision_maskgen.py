@@ -1,6 +1,5 @@
 # Refactored vision mask gen model. 
 # Splited the model structure and the training logic 
-# The training logic is implemented using the torch lightning module.
 
 from transformers import ViTModel
 from peft import get_peft_model, LoraConfig, TaskType, PeftModel
