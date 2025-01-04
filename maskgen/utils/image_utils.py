@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import cv2
 import numpy as np
 import os
+import requests
+from PIL import Image
 
 
 def create_transforms(processor: ViTImageProcessor):
@@ -40,6 +42,39 @@ def collate_fn(examples):
     pixel_values = torch.stack([example["pixel_values"] for example in examples])
     labels = torch.tensor([example["label"] for example in examples])
     return {"pixel_values": pixel_values, "labels": labels}
+
+def get_image_example(idx):
+    """
+    Returns a sample image URL based on provided index
+    
+    Args:
+        idx (int): Index of image URL to return
+        
+    Returns:
+        str: Image URL at specified index, or error message if invalid
+    """
+    image_urls = [
+    'http://images.cocodataset.org/val2017/000000039769.jpg',
+    "http://farm3.staticflickr.com/2066/1798910782_5536af8767_z.jpg",
+    "http://farm1.staticflickr.com/184/399924547_98e6cef97a_z.jpg",
+    "http://farm1.staticflickr.com/128/318959350_1a39aae18c_z.jpg",
+    "http://farm9.staticflickr.com/8490/8179481059_41be7bf062_z.jpg",
+    "http://farm1.staticflickr.com/76/197438957_b20800e7cf_z.jpg",
+    "http://farm3.staticflickr.com/2284/5730266001_7d051b01b7_z.jpg",
+    "https://github.com/EliSchwartz/imagenet-sample-images/blob/master/n01491361_tiger_shark.JPEG?raw=true",
+    "https://github.com/EliSchwartz/imagenet-sample-images/blob/master/n03000684_chain_saw.JPEG?raw=true",
+    "https://github.com/EliSchwartz/imagenet-sample-images/blob/master/n04009552_projector.JPEG?raw=true"
+    ]
+    
+    if not isinstance(idx, int):
+        return "Error: Index must be an integer"
+        
+    if idx < 0 or idx >= len(image_urls):
+        return f"Error: Index must be between 0 and {len(image_urls)-1}"
+    image = Image.open(requests.get(image_urls[idx], stream=True).raw)
+        
+    return image
+
 
 def normalize_and_rescale(heatmap: np.ndarray) -> np.ndarray:
     """Normalize heatmap to [0, 255] range."""
