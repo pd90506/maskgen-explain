@@ -44,12 +44,18 @@ class MaskGeneratingModel(nn.Module):
         # Actor network for policy generation
         self.actor = nn.Sequential(
             nn.Linear(self.base_model.config.hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
             nn.Linear(hidden_size, num_classes),
         )
 
         # Critic network for value estimation
         self.critic = nn.Sequential(
             nn.Linear(self.base_model.config.hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
             nn.Linear(hidden_size, num_classes),  # Outputs a single value for each class
         )
 
