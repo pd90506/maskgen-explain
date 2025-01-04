@@ -56,7 +56,7 @@ class MaskGeneratingModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, num_classes),  # Outputs a single value for each class
+            nn.Linear(hidden_size, 1),  # Outputs a single value
         )
 
         # Freeze the base model if required
@@ -85,7 +85,7 @@ class MaskGeneratingModel(nn.Module):
 
         # Critic value estimation using the [CLS] token
         pooled_output = hidden_states[:, 0, :]  # [CLS] token representation
-        value = self.critic(pooled_output) # Shape: [N, num_classes]
+        value = self.critic(pooled_output) # Shape: [N, 1]
 
         return mu_logits, value
     
@@ -106,7 +106,8 @@ class MaskGeneratingModel(nn.Module):
         # expand the labels to the same shape as mu_logits
         labels_expanded = labels.unsqueeze(1).expand(-1, mu_logits.shape[1], -1) # [N, L, 1]
         mu_true_logits = torch.gather(mu_logits, -1, labels_expanded).squeeze(-1) # [N, L]
-        true_value = torch.gather(value, -1, labels) # [N, 1]
+        # true_value = torch.gather(value, -1, labels) # [N, 1]
+        true_value = value
 
         dist = torch.distributions.Bernoulli(logits=mu_true_logits)
 
