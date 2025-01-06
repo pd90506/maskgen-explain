@@ -70,10 +70,12 @@ class PPOTrainer:
 
     def get_epsilon_greedy_action(self, dist, epsilon=0.05):
         """Implement epsilon-greedy action selection."""
-        random_mask = (torch.rand_like(dist.probs) < epsilon)
-        random_actions = torch.randint_like(dist.probs, low=0, high=2)
+        device = dist.probs.device
+        batch_size = dist.probs.shape[0]
+        random_mask = (torch.rand(batch_size) < epsilon).to(device)
+        random_actions = torch.randint_like(dist.probs, low=0, high=2).to(device)
         sampled_actions = dist.sample()
-        return torch.where(random_mask, random_actions, sampled_actions)
+        return torch.where(random_mask.unsqueeze(1), random_actions, sampled_actions)
 
     def compute_losses(self, dist, value, mu_mean_prob, actions, returns, advantages, 
                       old_log_probs, logits):

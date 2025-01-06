@@ -107,6 +107,7 @@ class EvalGame():
     def get_deletion_score(self, x, attribution):
         return self.get_auc(x, attribution, 'del')
     
+    @torch.no_grad()
     def play_game(self, x, attribution, mode='ins'):
         """ 
         masking the input with a series of masks based on the attribution importance.
