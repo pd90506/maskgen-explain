@@ -50,6 +50,7 @@ def get_imagenet_dataloader(split, processor, batch_size, shuffle, access_token=
     dataset.set_transform(preprocess)
 
     if num_samples is not None:
+        np.random.seed(42)  # Fix the seed for reproducibility
         indices = np.random.choice(len(dataset), num_samples, replace=False)
         dataset = Subset(dataset, indices)
 

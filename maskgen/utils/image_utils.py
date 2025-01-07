@@ -1,5 +1,5 @@
 import torch
-from torchvision.transforms import Compose, RandomResizedCrop, RandomHorizontalFlip, ToTensor, Normalize
+from torchvision.transforms import Compose, RandomResizedCrop, RandomHorizontalFlip, ToTensor, Normalize, Resize
 from transformers import ViTImageProcessor
 import matplotlib.pyplot as plt
 import cv2
@@ -21,8 +21,9 @@ def create_transforms(processor: ViTImageProcessor):
         crop_size = (size, size)
     
     return Compose([
-        RandomResizedCrop(crop_size),
-        RandomHorizontalFlip(),
+        # RandomResizedCrop(crop_size),
+        # RandomHorizontalFlip(),
+        Resize(crop_size),
         ToTensor(),
         normalize,
     ])
