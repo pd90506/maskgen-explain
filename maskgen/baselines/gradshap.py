@@ -136,6 +136,28 @@ class GradShapAnalyzer:
         
         return top_k_idx, importance_scores
 
+
+def downsample_attribution(attribution_map, patch_size=16):
+    """
+    Downsample attribution map by averaging patches of size patch_size x patch_size.
+    
+    Args:
+        attribution_map: Attribution scores (C,H,W)
+        patch_size: Size of patches to average (default: 16)
+    Returns:
+        Downsampled attribution map
+    """
+    # Take mean across channels first
+    attr_mean = attribution_map.mean(axis=0)  # (H,W)
+    
+    H, W = attr_mean.shape
+    new_H, new_W = H // patch_size, W // patch_size
+    
+    # Reshape to create patches and take mean
+    downsampled = attr_mean.reshape(new_H, patch_size, new_W, patch_size).mean(axis=(1,3))
+    
+    return downsampled
+
 # Example usage
 if __name__ == "__main__":
     from torch.utils.data import DataLoader, Subset
