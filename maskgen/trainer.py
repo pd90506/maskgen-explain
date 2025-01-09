@@ -98,6 +98,7 @@ class PPOTrainer:
         
         return actor_loss, critic_loss, entropy, kl_loss
 
+    @torch.no_grad()
     def collect_trajectories(self, pixel_values: torch.Tensor) -> dict:
         """Collect trajectories for PPO training.
         
