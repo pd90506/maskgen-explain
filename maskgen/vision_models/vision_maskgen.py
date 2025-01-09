@@ -112,8 +112,10 @@ class MaskGeneratingModel(nn.Module):
         dist = torch.distributions.Bernoulli(logits=mu_true_logits)
 
         # Calculate the mean of probabilities of each class for each token
-        mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]
-        mu_mean_prob = torch.mean(mu_prob, dim=1) # [N, num_classes]
+        # mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]
+        # mu_mean_prob = torch.mean(mu_prob, dim=1) # [N, num_classes]
+        mu_mean_logit = torch.mean(mu_logits, dim=1) # [N, num_classes]
+        mu_mean_prob = torch.softmax(mu_mean_logit, dim=-1) # [N, num_classes]
         return dist, true_value, mu_mean_prob
 
 
