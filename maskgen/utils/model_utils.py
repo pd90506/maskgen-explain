@@ -1,5 +1,6 @@
 from transformers import ViTImageProcessor, ViTForImageClassification, ViTConfig
 from maskgen.vision_models.vision_maskgen import MaskGeneratingModel
+# from maskgen.vision_models.vision_maskgen_single_value import MaskGeneratingModel
 
 def get_pred_model(pretrained_name, device):
     """Initialize and load the prediction model"""
