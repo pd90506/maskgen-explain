@@ -1,0 +1,49 @@
+{
+    "training": {
+        "batch_size": 256,
+        "num_steps": 5,
+        "mini_batch_size": 256,
+        "ppo_epochs": 1,
+        "epsilon": 0.0,
+        "lr": 5e-5,
+        "clip_param": 0.2,
+        "l_kl": 1,
+        "l_actor": 1.0,
+        "l_entropy": 0.0001,
+        "gamma": 0.50,
+        "tau": 0.95,
+        "max_epochs": 1,
+        "save_interval": 100,
+        "save_path": "./checkpoints"
+    },
+    "model": {
+        "pretrained_name": "google/vit-base-patch16-224",
+        "freeze_base": false
+    },
+    "wandb": {
+        "project": "vision_maskgen"
+    },
+    "dataset": {
+        "dataset_name": "imagenet",
+        "dataset_split": "train",
+        "api_key": "your_huggingface_api_key"
+    }
+} 
+
+{
+    "evaluation": {
+        "batch_size": 32,
+        "max_samples": 100,
+        "results_path": "./results",
+        "model_path": "./checkpoints/maskgen_best.pth"
+    },
+    "model": {
+        "pretrained_name": "google/vit-base-patch16-224",
+        "freeze_base": false
+    },
+    "dataset": {
+        "dataset_name": "imagenet",
+        "dataset_split": "tiny",
+        "api_key": "your_huggingface_api_key"
+    }
+} 

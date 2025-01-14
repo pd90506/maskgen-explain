@@ -14,6 +14,12 @@ pytorch-grad-cam/
 data/
 bert_models/
 wandb/
+checkpoints/
+archive/
+new_results/
+
+config.json
+eval_config.json
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

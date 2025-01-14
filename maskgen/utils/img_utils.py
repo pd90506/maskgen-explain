@@ -79,10 +79,20 @@ def show_superimposed(img, heatmap):
     blur = cv2.GaussianBlur(heatmap,(13,13), 11)
 
 def normalize_and_rescale(heatmap):
-    max_value = np.max(heatmap)
+    # # Get 1st and 99th percentile values
+    # max_value = np.percentile(heatmap, 95)
+    # min_value = np.percentile(heatmap, 5)
+    
+    # # Clip values to percentile range
+    # heatmap_clipped = np.clip(heatmap, min_value, max_value)
     min_value = np.min(heatmap)
-    heatmap_ft = (heatmap - min_value) / (max_value - min_value) # float point
-    return convert_to_255_scale(heatmap_ft) # int8
+    max_value = np.max(heatmap)
+    heatmap_clipped = heatmap
+    
+    # Normalize to [0,1] range
+    heatmap_ft = (heatmap_clipped - min_value) / (max_value - min_value)
+    
+    return convert_to_255_scale(heatmap_ft)
 
 def get_overlap(image, heatmap):
     return cv2.addWeighted(heatmap, 0.5, image, 0.5, 0)
