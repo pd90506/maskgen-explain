@@ -1,8 +1,8 @@
 #!/bin/bash
 #$ -M dpan@nd.edu      # Email address for job notification
 #$ -m abe               # Send mail when job begins, ends and aborts
-#$ -q gpu@@lucy          # Specify queue
-#$ -l gpu=1
+#$ -q gpu@qa-a100-002          # Specify queue
+#$ -l gpu_card=1
 #$ -pe smp 8           # Specify number of cores to use.
 #$ -N train_vision_maskgen       # Specify job name
 
@@ -12,5 +12,6 @@ conda activate transformer_explain
 nvidia-smi
 
 export HF_HOME=/scratch365/dpan/hfcache 
+export CUDA_VISIBLE_DEVICES=2
 
 python train_vision_maskgen.py

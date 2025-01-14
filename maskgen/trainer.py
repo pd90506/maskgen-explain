@@ -49,10 +49,11 @@ class PPOTrainer:
         upsampled_mask = F.interpolate(reshaped_mask, size=(H, W), mode='nearest')
         masked_input = pixel_values * upsampled_mask
 
-        masked_pred_prob_all = torch.softmax(self.target_model(masked_input).logits, -1) # [N, num_classes]
-        masked_true_prob = masked_pred_prob_all.gather(1, label) # [N, 1]
+        masked_pred_logprob_all = torch.log_softmax(self.target_model(masked_input).logits, -1) # [N, num_classes]
+        masked_true_logprob = masked_pred_logprob_all.gather(1, label) # [N, 1]
         
-        reward = masked_true_prob * (torch.ones_like(mask).sum(-1, keepdim=True)) / (mask.sum(-1, keepdim=True) + 1)
+        # reward = masked_true_prob * (torch.ones_like(mask).sum(-1, keepdim=True)) / (mask.sum(-1, keepdim=True) + 1)
+        reward = masked_true_logprob - torch.log(mask.sum(-1, keepdim=True) + 1)
         # reward = torch.log(reward + 1e-6)
         
         return pixel_values, reward
@@ -77,7 +78,7 @@ class PPOTrainer:
         sampled_actions = dist.sample()
         return torch.where(random_mask.unsqueeze(1), random_actions, sampled_actions)
 
-    def compute_losses(self, dist, value, mu_mean_prob, actions, returns, advantages, 
+    def compute_losses(self, dist, value, mu_mean_logprob, actions, returns, advantages, 
                       old_log_probs, logits):
         """Compute PPO losses."""
         new_log_probs = dist.log_prob(actions).sum(-1, keepdim=True)
@@ -85,15 +86,15 @@ class PPOTrainer:
         
         surr1 = ratio * advantages
         surr2 = torch.clamp(ratio, 1.0 - self.config['clip_param'],
-                           1.0 + self.config['clip_param']) * advantages
+                           1.0 + self.config['clip_param']) * advantages 
         actor_loss = -torch.min(surr1, surr2).mean()
         
         critic_loss = (returns - value).pow(2).mean()
 
-        entropy = dist.entropy().mean()
+        entropy = dist.entropy().sum(-1).mean()
         
         log_logit = torch.log_softmax(logits, -1)
-        kl_loss = F.kl_div(torch.log(mu_mean_prob), log_logit, 
+        kl_loss = F.kl_div(torch.log_softmax(mu_mean_logprob, -1), log_logit, 
                           reduction='batchmean', log_target=True)
         
         return actor_loss, critic_loss, entropy, kl_loss
@@ -226,10 +227,10 @@ class PPOTrainer:
                 ppo_iterator = self.ppo_iter(self.config['mini_batch_size'], states, actions, log_probs, returns, advantages, logits, pseudo_labels)
                 for state, action, old_log_probs, return_, advantage, logit, pseudo_label in ppo_iterator:
                     
-                    dist, value, mu_mean_prob = self.maskgen.get_dist_critic(state, pseudo_label)
+                    dist, value, mu_mean_logprob = self.maskgen.get_dist_critic(state, pseudo_label)
                     
                     actor_loss, critic_loss, entropy, kl_loss = self.compute_losses(
-                        dist, value, mu_mean_prob,
+                        dist, value, mu_mean_logprob,
                         action, return_,
                         advantage, old_log_probs,
                         logit
