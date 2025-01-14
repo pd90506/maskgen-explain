@@ -56,7 +56,7 @@ class MaskGeneratingModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, num_classes),  # Outputs a single value
+            nn.Linear(hidden_size, 1),  # Outputs a single value
         )
 
         # Freeze the base model if required
@@ -106,19 +106,14 @@ class MaskGeneratingModel(nn.Module):
         # expand the labels to the same shape as mu_logits
         labels_expanded = labels.unsqueeze(1).expand(-1, mu_logits.shape[1], -1) # [N, L, 1]
         mu_true_logits = torch.gather(mu_logits, -1, labels_expanded).squeeze(-1) # [N, L]
-        true_value = torch.gather(value, -1, labels) # [N, 1]
-        # true_value = value
+        # true_value = torch.gather(value, -1, labels) # [N, 1]
+        true_value = value
 
         dist = torch.distributions.Bernoulli(logits=mu_true_logits)
 
         # Calculate the mean of probabilities of each class for each token
-        # mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]
-        # mu_mean_prob = torch.mean(mu_prob, dim=1) # [N, num_classes]
-        # mu_mean_logit = torch.mean(mu_logits, dim=1) # [N, num_classes]
-        mu_log_softmax = torch.nn.functional.log_softmax(mu_logits, dim=-1) # [N, L, num_classes]
-        # mu_mean_prob = torch.softmax(mu_mean_logit, dim=-1) # [N, num_classes]
-        mu_mean_prob = torch.mean(mu_log_softmax, dim=1) # [N, num_classes]
-        mu_mean_prob = torch.softmax(mu_mean_prob, dim=-1) # [N, num_classes]
+        mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]
+        mu_mean_prob = torch.mean(mu_prob, dim=1) # [N, num_classes]
         return dist, true_value, mu_mean_prob
 
 

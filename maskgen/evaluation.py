@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 EPSILON = 1e-5
+EVAL_STEP = 10
 
 def idx_to_selector(idx_tensor, selection_size):
     """
@@ -67,7 +68,7 @@ def obtain_masks_sequence(attribution):
     attribution = attribution.reshape(-1, H_a * W_a) # [1, H_a*W_a]
     attribution = attribution + EPSILON * torch.randn_like(attribution)
     a, _ = torch.sort(attribution, dim=-1, descending=True)
-    idx = torch.ceil(torch.arange(100) * attribution_size / 100).int()
+    idx = torch.ceil(torch.arange(EVAL_STEP) * attribution_size / EVAL_STEP).int()
     a = a.reshape(-1, 1)
     a = a[idx,:] # [100, 1]
     res = (attribution > a).float() # [100, H_a*W_a]
@@ -94,12 +95,14 @@ def obtain_masked_inputs_sequence(x, attribution, mode='ins'):
 class EvalGame():
     """ Evaluation games
     """
-    def __init__(self, model, output_dim=1000):
+    def __init__(self, model, output_dim=1000, auc_method='prob'):
         """ 
         model: a prediction model takes an input and outputs logits
+        auc_method: 'prob' or 'acc'
         """
         self.model = model
         self.output_dim = output_dim
+        self.auc_method = auc_method
     
     def get_insertion_score(self, x, attribution):
         return self.get_auc(x, attribution, 'ins')
@@ -107,6 +110,7 @@ class EvalGame():
     def get_deletion_score(self, x, attribution):
         return self.get_auc(x, attribution, 'del')
     
+    @torch.no_grad()
     def play_game(self, x, attribution, mode='ins'):
         """ 
         masking the input with a series of masks based on the attribution importance.
@@ -118,14 +122,21 @@ class EvalGame():
         selector = idx_to_selector(pseudo_label, self.output_dim) # [1, 1000]
         
         x_sequence = obtain_masked_inputs_sequence(x, attribution, mode=mode) # [100, C, H, W]
-        probs = torch.softmax(self.model(x_sequence), dim=-1) # [100, 1000]
-        probs = (probs * selector).sum(-1) # [100,]
+        if self.auc_method == 'prob':
+            probs = torch.softmax(self.model(x_sequence), dim=-1) # [100, 1000]
+            probs = (probs * selector).sum(-1) # [100,]
+            return probs
+
+        elif self.auc_method == 'acc':
+            preds = self.model(x_sequence).argmax(-1)
+            acc = (preds == pseudo_label).float()
+            return acc
         
         return probs
     
     def get_auc(self, x, attribution, mode='ins'):
         probs = self.play_game(x, attribution, mode)
-        return probs.sum()
+        return probs.mean()
     
     def get_insertion_at_topk(self, x, attribution, topk):
         """"
