@@ -9,7 +9,7 @@ import requests
 from PIL import Image
 
 
-def create_transforms(processor: ViTImageProcessor):
+def create_transforms(processor: ViTImageProcessor, train: bool = False):
     """Create image transforms based on processor config."""
     normalize = Normalize(mean=processor.image_mean, std=processor.image_std)
     
@@ -19,18 +19,24 @@ def create_transforms(processor: ViTImageProcessor):
     elif "shortest_edge" in processor.size:
         size = processor.size["shortest_edge"]
         crop_size = (size, size)
-    
-    return Compose([
-        # RandomResizedCrop(crop_size),
-        # RandomHorizontalFlip(),
-        Resize(crop_size),
-        ToTensor(),
-        normalize,
-    ])
+     
+    if train:
+        return Compose([
+            RandomResizedCrop(crop_size),
+            RandomHorizontalFlip(),
+            ToTensor(),
+            normalize,
+        ])
+    else:
+        return Compose([
+            Resize(crop_size),
+            ToTensor(),
+            normalize,
+        ])
 
-def get_preprocess(processor):
+def get_preprocess(processor, train: bool = False):
     """Apply transforms across a batch."""
-    transforms = create_transforms(processor)
+    transforms = create_transforms(processor, train)
     def preprocess(example_batch):
         example_batch["pixel_values"] = [
             transforms(image.convert("RGB")) 
