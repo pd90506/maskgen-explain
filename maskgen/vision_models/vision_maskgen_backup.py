@@ -49,20 +49,27 @@ class MaskGeneratingModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, num_classes),
         )
-
+        
         # Critic network for value estimation
         self.critic = nn.Sequential(
             nn.Linear(self.base_model.config.hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 1),  # Outputs a single value
+            nn.Linear(hidden_size, num_classes),  # Outputs a single value
         )
 
         # Freeze the base model if required
         if freeze_base:
             for param in self.base_model.parameters():
                 param.requires_grad = False
+        self.freeze_base = freeze_base
+    
+    def trainable_parameters(self):
+        if self.freeze_base:
+            return list(self.actor.parameters()) + list(self.critic.parameters())
+        else:
+            return self.parameters()
 
     def forward(self, pixel_values: torch.Tensor):
         """
@@ -106,15 +113,14 @@ class MaskGeneratingModel(nn.Module):
         # expand the labels to the same shape as mu_logits
         labels_expanded = labels.unsqueeze(1).expand(-1, mu_logits.shape[1], -1) # [N, L, 1]
         mu_true_logits = torch.gather(mu_logits, -1, labels_expanded).squeeze(-1) # [N, L]
-        # true_value = torch.gather(value, -1, labels) # [N, 1]
-        true_value = value
+        true_value = torch.gather(value, -1, labels) # [N, 1]
 
         dist = torch.distributions.Bernoulli(logits=mu_true_logits)
 
         # Calculate the mean of probabilities of each class for each token
-        mu_prob = torch.softmax(mu_logits, -1) # [N, L, num_classes]
-        mu_mean_prob = torch.mean(mu_prob, dim=1) # [N, num_classes]
-        return dist, true_value, mu_mean_prob
+        mu_sum_logit = torch.sum(mu_logits, dim=1) # [N, num_classes]
+        mu_sum_logprob = torch.log_softmax(mu_sum_logit, dim=-1) # [N, num_classes]
+        return dist, true_value, mu_sum_logprob # the overall probabilities
 
 
     @torch.no_grad()

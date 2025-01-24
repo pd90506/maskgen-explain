@@ -64,7 +64,7 @@ def main():
 
     # Data preprocessing
     dataset = load_imagenet(split=config['dataset_split'], access_token=config['api_key'])
-    preprocess = get_preprocess(processor)
+    preprocess = get_preprocess(processor, train=True)
     dataset.set_transform(preprocess)
     
     # get dataloader
